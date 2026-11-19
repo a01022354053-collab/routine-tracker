@@ -4,23 +4,278 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>루틴 트래커</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&display=swap">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17171c" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css">
   <style>
-    :root { --bg: #fbfbfa; --fg: #1d1f1e; --font: "Gowun Dodum", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif; }
-    @media (prefers-color-scheme: dark) { :root { --bg: #141615; --fg: #ecedeb; color-scheme: dark } }
+    /* 허브 앤 스포크: 가운데 '나의 하루'가 생활 영역들을 선으로 묶는다 */
+    :root {
+      --bg: #ffffff;
+      --text: #191f28;
+      --text-sub: #4e5968;
+      --line: #e1e5ea;
+      --blue: #3182f6;
+      --blue-deep: #1b64da;
+      --blue-soft: #64a8ff;
+
+      --c-blue: #3182f6;   --t-blue: #e8f3ff;
+      --c-yellow: #ffb331; --t-yellow: #fff4d6;
+      --c-red: #f04452;    --t-red: #ffeded;
+      --c-purple: #8b5cf6; --t-purple: #f2edff;
+      --c-green: #03b26c;  --t-green: #e3f7ee;
+
+      --font: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      --emoji: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+      --spring: cubic-bezier(.34, 1.56, .64, 1);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #17171c; --text: #f2f2f4; --text-sub: #a5a5ad; --line: #34343e;
+        --t-blue: #1d2b40; --t-yellow: #392f1c; --t-red: #3d2328; --t-purple: #2c2542; --t-green: #18342a;
+        color-scheme: dark;
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #17171c; --text: #f2f2f4; --text-sub: #a5a5ad; --line: #34343e;
+      --t-blue: #1d2b40; --t-yellow: #392f1c; --t-red: #3d2328; --t-purple: #2c2542; --t-green: #18342a;
+      color-scheme: dark;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
-      background: var(--bg); color: var(--fg);
-      display: grid; place-items: center;
-      padding: 0 max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px));
+      min-height: 100%;
+      display: grid;
+      place-items: center;
+      padding-block: max(24px, env(safe-area-inset-top, 0px)) max(24px, env(safe-area-inset-bottom, 0px));
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px));
+      background: var(--bg);
+      color: var(--text);
       font-family: var(--font);
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
     }
-    h1 { margin: 0; font-weight: 400; font-size: clamp(2.5rem, 10vw, 5rem); letter-spacing: 0.02em; }
+
+    .stage {
+      --n: 6;
+      --core: 25cqw;
+      --node: 16.5cqw;
+      --orbit: 37cqw;
+      --gap: 2.6cqw;
+      position: relative;
+      width: min(100%, 480px);
+      aspect-ratio: 1;
+      container-type: inline-size;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    /* 연결선 + 노드 한 묶음. 각도는 --i로 정해진다 */
+    .spoke {
+      --step: calc(360deg / var(--n));
+      --a: calc(var(--i) * var(--step) - var(--step) / 2);
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .link {
+      --start: calc(var(--core) / 2 + var(--gap));
+      --end: calc(var(--orbit) - var(--node) / 2 - var(--gap));
+      position: absolute;
+      left: 50cqw;
+      top: calc(50cqw - max(2px, .7cqw) / 2);
+      width: calc(var(--end) - var(--start));
+      height: max(2px, .7cqw);
+      border-radius: 99px;
+      background: var(--line);
+      transform-origin: 0 50%;
+      transform: rotate(calc(var(--a) - 90deg)) translateX(var(--start));
+      animation: fade .5s ease-out both;
+      animation-delay: calc(.25s + var(--i) * 70ms);
+    }
+    .spark {
+      position: absolute;
+      top: 50%;
+      width: 1.8cqw;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: var(--c);
+      translate: 0 -50%;
+      animation: flow 3.2s ease-in-out infinite;
+      animation-delay: calc(var(--i) * -.55s);
+    }
+
+    .node {
+      position: absolute;
+      left: calc(50cqw + var(--orbit) * sin(var(--a)));
+      top: calc(50cqw - var(--orbit) * cos(var(--a)));
+      width: var(--node);
+      aspect-ratio: 1;
+      translate: -50% -50%;
+      pointer-events: auto;
+      animation: pop .6s var(--spring) both;
+      animation-delay: calc(var(--i) * 70ms);
+    }
+    .float {
+      width: 100%;
+      height: 100%;
+      animation: bob 4.8s ease-in-out infinite;
+      animation-delay: calc(var(--i) * -.8s);
+    }
+    .bubble {
+      display: grid;
+      place-items: center;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background: var(--t);
+      box-shadow: 0 1.6cqw 3.6cqw -1.6cqw color-mix(in srgb, var(--c) 45%, transparent);
+      transition: transform .18s ease;
+    }
+    .node:active .bubble { transform: scale(.92); }
+    .emoji {
+      font-family: var(--emoji);
+      font-size: 7.6cqw;
+      line-height: 1;
+    }
+    .label {
+      position: absolute;
+      top: calc(100% + 1.8cqw);
+      left: 50%;
+      translate: -50% 0;
+      white-space: nowrap;
+      font-size: clamp(12px, 3.7cqw, 16px);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: var(--text-sub);
+    }
+
+    .up .label { top: auto; bottom: calc(100% + 1.8cqw); }
+
+    /* 나중에 영역을 더 붙일 자리 */
+    .is-add .link {
+      background: repeating-linear-gradient(90deg, var(--line) 0 1.6cqw, transparent 1.6cqw 3cqw);
+    }
+    .is-add .bubble {
+      background: transparent;
+      border: max(2px, .6cqw) dashed var(--line);
+      box-shadow: none;
+    }
+    .is-add svg { width: 5.4cqw; height: 5.4cqw; color: var(--text-sub); opacity: .6; }
+
+    /* 가운데 허브 */
+    .core {
+      position: absolute;
+      left: 50cqw;
+      top: 50cqw;
+      width: var(--core);
+      aspect-ratio: 1;
+      translate: -50% -50%;
+      display: grid;
+      place-content: center;
+      justify-items: center;
+      gap: 1cqw;
+      border-radius: 50%;
+      background: linear-gradient(150deg, var(--blue-soft), var(--blue) 55%, var(--blue-deep));
+      box-shadow: 0 3cqw 7cqw -2.6cqw color-mix(in srgb, var(--blue) 70%, transparent);
+      color: #fff;
+      animation: pop .7s var(--spring) both;
+      z-index: 1;
+    }
+    .core::before, .core::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: max(1.5px, .4cqw) solid var(--blue);
+      opacity: 0;
+      animation: ring 3.6s ease-out infinite;
+      z-index: -1;
+    }
+    .core::after { animation-delay: 1.8s; }
+    .core .emoji { font-size: 8cqw; }
+    .core strong {
+      font-size: clamp(14px, 4.2cqw, 19px);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    .spoke:nth-child(1) { --i: 0; --c: var(--c-blue);   --t: var(--t-blue); }
+    .spoke:nth-child(2) { --i: 1; --c: var(--c-yellow); --t: var(--t-yellow); }
+    .spoke:nth-child(3) { --i: 2; --c: var(--c-red);    --t: var(--t-red); }
+    .spoke:nth-child(4) { --i: 3; --c: var(--c-purple); --t: var(--t-purple); }
+    .spoke:nth-child(5) { --i: 4; --c: var(--c-green);  --t: var(--t-green); }
+    .spoke:nth-child(6) { --i: 5; --c: var(--line);     --t: transparent; }
+
+    @keyframes pop  { from { scale: .3; opacity: 0; } to { scale: 1; opacity: 1; } }
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes bob  { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1.1cqw); } }
+    @keyframes flow {
+      0%   { left: calc(100% - 1.8cqw); opacity: 0; }
+      20%  { opacity: 1; }
+      80%  { opacity: 1; }
+      100% { left: 0; opacity: 0; }
+    }
+    @keyframes ring { 0% { scale: 1; opacity: .35; } 100% { scale: 1.45; opacity: 0; } }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      .spark { display: none; }
+    }
   </style>
 </head>
 <body>
-  <h1>안녕</h1>
+  <ul class="stage">
+    <li class="spoke up">
+      <span class="link" aria-hidden="true"><span class="spark"></span></span>
+      <div class="node"><div class="float">
+        <span class="bubble"><span class="emoji" aria-hidden="true">⏰</span></span>
+        <span class="label">하루 루틴</span>
+      </div></div>
+    </li>
+    <li class="spoke up">
+      <span class="link" aria-hidden="true"><span class="spark"></span></span>
+      <div class="node"><div class="float">
+        <span class="bubble"><span class="emoji" aria-hidden="true">💰</span></span>
+        <span class="label">돈 관리</span>
+      </div></div>
+    </li>
+    <li class="spoke">
+      <span class="link" aria-hidden="true"><span class="spark"></span></span>
+      <div class="node"><div class="float">
+        <span class="bubble"><span class="emoji" aria-hidden="true">🧾</span></span>
+        <span class="label">고정 지출</span>
+      </div></div>
+    </li>
+    <li class="spoke">
+      <span class="link" aria-hidden="true"><span class="spark"></span></span>
+      <div class="node"><div class="float">
+        <span class="bubble"><span class="emoji" aria-hidden="true">🛒</span></span>
+        <span class="label">필요한 물건</span>
+      </div></div>
+    </li>
+    <li class="spoke">
+      <span class="link" aria-hidden="true"><span class="spark"></span></span>
+      <div class="node"><div class="float">
+        <span class="bubble"><span class="emoji" aria-hidden="true">🎒</span></span>
+        <span class="label">내 물건</span>
+      </div></div>
+    </li>
+    <li class="spoke is-add" aria-label="추가">
+      <span class="link" aria-hidden="true"></span>
+      <div class="node"><div class="float">
+        <span class="bubble">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+        </span>
+      </div></div>
+    </li>
+    <li class="core">
+      <span class="emoji" aria-hidden="true">☀️</span>
+      <strong>나의 하루</strong>
+    </li>
+  </ul>
 </body>
 </html>
