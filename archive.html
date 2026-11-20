@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>저장소 · 일상 매니저</title>
+  <meta name="theme-color" content="#f2f4f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17171c" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/toss/tossface@v1.6.1/dist/tossface.css">
+  <link rel="stylesheet" href="assets/style.css">
+  <style>
+    .monthnav { display: flex; align-items: center; gap: 4px; margin-left: -8px; }
+    .monthnav b { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; min-width: 7.5em; text-align: center; }
+    .monthnav button { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--text-2); }
+    .monthnav button:active { background: var(--press); }
+    .monthnav svg { width: 20px; height: 20px; }
+
+    .stat .label { font-size: 14px; color: var(--text-3); font-weight: 500; }
+    .stat .value { font-size: 34px; font-weight: 700; letter-spacing: -0.03em; margin-top: 2px; }
+    .stat .sub { font-size: 14px; color: var(--text-2); margin-top: 4px; }
+
+    .cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; margin-top: 20px; }
+    .cal .wd { font-size: 12px; font-weight: 600; color: var(--text-3); text-align: center; padding-bottom: 2px; }
+    .cal .c {
+      position: relative; aspect-ratio: 1; border-radius: 12px;
+      display: grid; place-items: center;
+      font-size: 14px; font-weight: 600; color: var(--text-3);
+      background: var(--cell);
+    }
+    .cal .c.blank { background: none; }
+    .cal .c.has { background: color-mix(in srgb, var(--blue) var(--p), var(--cell)); color: var(--text); }
+    .cal .c.has.hi { color: var(--on-blue); }
+    .cal .c.planned { background: none; outline: 1.5px dashed var(--text-3); outline-offset: -1.5px; color: var(--text-2); }
+    .cal .c.today::after {
+      content: ""; position: absolute; bottom: 12%; width: 4px; height: 4px; border-radius: 50%; background: currentColor;
+    }
+    .cal-key { display: flex; gap: 14px; margin-top: 14px; font-size: 12px; color: var(--text-3); }
+    .cal-key span { display: inline-flex; align-items: center; gap: 6px; }
+    .cal-key i { width: 12px; height: 12px; border-radius: 4px; }
+    .cal-key .k-lo { background: color-mix(in srgb, var(--blue) 30%, var(--cell)); }
+    .cal-key .k-hi { background: var(--blue); }
+    .cal-key .k-plan { outline: 1.5px dashed var(--text-3); outline-offset: -1.5px; }
+
+    .day { display: grid; gap: 4px; }
+    .day header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .day h3 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+    .day .memo { margin: 6px 0 0; font-size: 15px; color: var(--text-2); }
+    .day .tasks { margin-top: 6px; }
+    .day .task { padding-block: 7px; grid-template-columns: 36px 1fr 24px; }
+    .day .tile { width: 36px; height: 36px; border-radius: 12px; font-size: 19px; }
+    .day .check { width: 24px; height: 24px; }
+    .thanks { margin-top: 10px; padding: 14px 16px; border-radius: 16px; background: var(--press); }
+    .thanks p { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--text-3); }
+    .thanks ol { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; font-size: 15px; line-height: 1.5; }
+    .list { display: grid; gap: 12px; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <p class="brand">일상 매니저</p>
+    <h1>저장소</h1>
+
+    <div class="monthnav">
+      <button id="prev" aria-label="이전 달"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <b id="monthTitle" class="num"></b>
+      <button id="next" aria-label="다음 달"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    </div>
+
+    <section class="card">
+      <div class="stat">
+        <div class="label">달성률</div>
+        <div class="value num" id="rate">–</div>
+        <div class="sub num" id="rateSub"></div>
+      </div>
+      <div class="cal" id="cal"></div>
+      <div class="cal-key">
+        <span><i class="k-lo"></i>조금</span>
+        <span><i class="k-hi"></i>전부</span>
+        <span><i class="k-plan"></i>예정</span>
+      </div>
+    </section>
+
+    <div class="sec-head"><h2>기록</h2></div>
+    <div class="list" id="list"><p class="empty">불러오는 중…</p></div>
+  </main>
+
+  <footer class="tabbar">
+    <nav aria-label="메뉴">
+      <a class="tab" href="./">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="3.5" width="16" height="17" rx="4" stroke="currentColor" stroke-width="2"/><path d="M8.5 9.5l1.6 1.6 3-3.2M8.5 15h7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        오늘
+      </a>
+      <a class="tab" href="archive.html" aria-current="page">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="4" width="17" height="5" rx="2" stroke="currentColor" stroke-width="2"/><path d="M5 9v8a3 3 0 003 3h8a3 3 0 003-3V9M10 13h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        저장소
+      </a>
+    </nav>
+  </footer>
+
+  <script src="assets/app.js"></script>
+  <script>
+    const now = new Date();
+    const todayKey = keyOf(now);
+    let y = now.getFullYear(), m = now.getMonth(), DAYS = [];
+
+    function renderCal() {
+      const byDate = Object.fromEntries(DAYS.map(d => [d.date, d]));
+      const first = new Date(y, m, 1), last = new Date(y, m + 1, 0).getDate();
+      const lead = (first.getDay() + 6) % 7;
+      let html = ['월', '화', '수', '목', '금', '토', '일'].map(w => `<span class="wd">${w}</span>`).join('');
+      for (let i = 0; i < lead; i++) html += '<span class="c blank"></span>';
+      for (let d = 1; d <= last; d++) {
+        const k = `${y}-${pad(m + 1)}-${pad(d)}`, rec = byDate[k];
+        let cls = 'c', style = '', label = `${m + 1}월 ${d}일`;
+        if (rec && rec.checked) {
+          const r = rateOf(rec);
+          cls += ' has' + (r >= 60 ? ' hi' : '');
+          style = ` style="--p:${Math.round(10 + r * 0.9)}%"`;
+          label += ` ${r}%`;
+        } else if (rec) {
+          cls += ' planned';
+          label += ' 예정';
+        }
+        if (k === todayKey) cls += ' today';
+        html += `<span class="${cls} num"${style} aria-label="${label}">${d}</span>`;
+      }
+      document.getElementById('cal').innerHTML = html;
+    }
+
+    function renderStats() {
+      const st = monthStats(DAYS, y, m);
+      document.getElementById('rate').textContent = st.rate == null ? '–' : `${st.rate}%`;
+      const parts = [`기록 ${st.count}일`];
+      if (st.total) parts.push(`할 일 ${st.total}개 중 ${st.done}개 완료`);
+      document.getElementById('rateSub').textContent = parts.join(' · ');
+    }
+
+    function renderList() {
+      const prefix = `${y}-${pad(m + 1)}-`;
+      const days = DAYS.filter(d => d.date.startsWith(prefix)).reverse();
+      const list = document.getElementById('list');
+      if (!days.length) { list.innerHTML = '<p class="empty">이 달에는 기록이 없어요</p>'; return; }
+      list.innerHTML = days.map(d => {
+        const tag = d.checked ? `<span class="pill num">${rateOf(d)}%</span>` : '<span class="pill soft">예정</span>';
+        const todos = d.todos || [], thanks = (d.thanks || []).filter(Boolean);
+        return `<article class="card day">
+          <header><h3>${dayLabel(d.date)}</h3>${tag}</header>
+          ${d.memo ? `<p class="memo">${esc(d.memo)}</p>` : ''}
+          ${todos.length ? tasksHTML(todos) : ''}
+          ${thanks.length ? `<div class="thanks"><p>감사한 점</p><ol>${thanks.map(t => `<li>${esc(t)}</li>`).join('')}</ol></div>` : ''}
+        </article>`;
+      }).join('');
+    }
+
+    function render() {
+      document.getElementById('monthTitle').textContent = `${y}년 ${m + 1}월`;
+      renderStats();
+      renderCal();
+      renderList();
+    }
+    const shift = n => { m += n; if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } render(); };
+    document.getElementById('prev').onclick = () => shift(-1);
+    document.getElementById('next').onclick = () => shift(1);
+
+    render();
+    loadDays().then(d => { DAYS = d; render(); }).catch(() => {
+      document.getElementById('list').innerHTML = '<p class="empty">기록을 불러오지 못했어요. 새로고침해 주세요.</p>';
+    });
+  </script>
+</body>
+</html>
