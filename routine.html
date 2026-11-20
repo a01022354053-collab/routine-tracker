@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>하루 루틴</title>
+  <meta name="theme-color" content="#f2f4f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17171c" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/toss/tossface@v1.6.1/dist/tossface.css">
+  <style>
+    /* 위에서 아래로: 요일 고르기 → 지금 할 일 → 그날 타임라인 → 한 주 일정표 */
+    :root {
+      --bg: #f2f4f6;
+      --card: #ffffff;
+      --text: #191f28;
+      --text-2: #4e5968;
+      --text-3: #8b95a1;
+      --line: #e5e8eb;
+      --press: #f2f4f6;
+      --blue: #3182f6;
+      --now: #f04452;
+      --mix: 20%;
+      --mix-soft: 9%;
+
+      --c-blue: #3182f6;   --t-blue: #e8f3ff;
+      --c-orange: #fe9800; --t-orange: #fff1de;
+      --c-green: #03b26c;  --t-green: #e3f7ee;
+      --c-red: #f04452;    --t-red: #ffeded;
+      --c-yellow: #ffc342; --t-yellow: #fff6d6;
+      --c-teal: #18a5a5;   --t-teal: #e0f5f5;
+      --c-purple: #8b5cf6; --t-purple: #f2edff;
+      --c-slate: #8b95a1;  --t-slate: #eef0f3;
+      --c-pink: #f25ca2;   --t-pink: #ffeaf3;
+
+      --font: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      --emoji: Tossface, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+      --H: 24px; /* 일정표 1시간 높이 */
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #17171c; --card: #222229; --text: #f2f2f4; --text-2: #c3c3c9; --text-3: #8a8a94; --line: #34343e; --press: #2c2c35;
+        --mix: 34%; --mix-soft: 16%;
+        --t-blue: #1d2b40; --t-orange: #3a2c1a; --t-green: #18342a; --t-red: #3d2328; --t-yellow: #39321c;
+        --t-teal: #163434; --t-purple: #2c2542; --t-slate: #2b2d33; --t-pink: #3d2232;
+        color-scheme: dark;
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #17171c; --card: #222229; --text: #f2f2f4; --text-2: #c3c3c9; --text-3: #8a8a94; --line: #34343e; --press: #2c2c35;
+      --mix: 34%; --mix-soft: 16%;
+      --t-blue: #1d2b40; --t-orange: #3a2c1a; --t-green: #18342a; --t-red: #3d2328; --t-yellow: #39321c;
+      --t-teal: #163434; --t-purple: #2c2542; --t-slate: #2b2d33; --t-pink: #3d2232;
+      color-scheme: dark;
+    }
+
+    .cat-duty    { --c: var(--c-blue);   --t: var(--t-blue); }
+    .cat-wake    { --c: var(--c-orange); --t: var(--t-orange); }
+    .cat-rest    { --c: var(--c-green);  --t: var(--t-green); }
+    .cat-workout { --c: var(--c-red);    --t: var(--t-red); }
+    .cat-meal    { --c: var(--c-yellow); --t: var(--t-yellow); }
+    .cat-study   { --c: var(--c-teal);   --t: var(--t-teal); }
+    .cat-free    { --c: var(--c-purple); --t: var(--t-purple); }
+    .cat-sleep   { --c: var(--c-slate);  --t: var(--t-slate); }
+    .cat-phone   { --c: var(--c-pink);   --t: var(--t-pink); }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
+      padding-bottom: max(40px, env(safe-area-inset-bottom, 0px));
+    }
+    body::before {
+      content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px);
+      background: var(--bg); z-index: 10;
+    }
+    button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+    :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 8px; }
+    .emoji { font-family: var(--emoji); line-height: 1; font-weight: 400; }
+    .num { font-variant-numeric: tabular-nums; }
+
+    .wrap {
+      max-width: 480px;
+      margin: 0 auto;
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px));
+      display: grid;
+      gap: 12px;
+    }
+
+    /* 상단 */
+    .bar {
+      position: sticky;
+      top: env(safe-area-inset-top, 0px);
+      z-index: 5;
+      background: var(--bg);
+      padding-block: 8px;
+    }
+    .back {
+      display: inline-grid; place-items: center;
+      width: 40px; height: 40px; margin-left: -8px;
+      border-radius: 12px; color: var(--text);
+      transition: background .15s;
+    }
+    .back:active { background: var(--press); }
+    .back svg { width: 24px; height: 24px; }
+    h1 { margin: 4px 0 8px; font-size: 26px; font-weight: 700; letter-spacing: -0.03em; }
+
+    /* 요일 */
+    .days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+    .day {
+      display: grid; justify-items: center; gap: 4px;
+      padding-block: 10px; border-radius: 16px;
+      transition: background .15s, transform .15s;
+    }
+    .day:active { transform: scale(.94); }
+    .day small { font-size: 13px; color: var(--text-3); font-weight: 500; }
+    .day b { font-size: 17px; font-weight: 600; }
+    .day.is-today b { color: var(--blue); }
+    .day[aria-pressed="true"] { background: var(--blue); }
+    .day[aria-pressed="true"] small, .day[aria-pressed="true"] b { color: #fff; }
+
+    .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .head h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+    .badge {
+      font-size: 13px; font-weight: 600; padding: 4px 9px; border-radius: 8px;
+      background: var(--t); color: var(--c);
+    }
+    .badge.cat-meal { color: #c88a00; }
+
+    .card { background: var(--card); border-radius: 24px; padding: 20px; }
+
+    /* 지금 */
+    .now { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; align-items: center; }
+    .now .tile { width: 56px; height: 56px; border-radius: 18px; font-size: 30px; grid-row: span 2; }
+    .now .eyebrow { font-size: 13px; font-weight: 600; color: var(--blue); }
+    .now .title { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+    .now .sub { grid-column: 1 / -1; font-size: 15px; color: var(--text-2); margin-top: 6px; }
+    .track { grid-column: 1 / -1; height: 8px; border-radius: 99px; background: var(--press); overflow: hidden; }
+    .track i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--c); transition: width .6s ease; }
+
+    .tile {
+      display: grid; place-items: center;
+      width: 40px; height: 40px; border-radius: 13px;
+      background: var(--t); font-size: 21px;
+    }
+
+    /* 타임라인 */
+    .timeline { list-style: none; margin: 0; padding: 0; position: relative; display: grid; gap: 4px; }
+    .timeline::before {
+      content: ""; position: absolute; left: calc(48px + 12px + 20px - 1px); top: 24px; bottom: 24px;
+      width: 2px; background: var(--line); border-radius: 2px;
+    }
+    .row {
+      position: relative;
+      display: grid; grid-template-columns: 48px 40px 1fr; gap: 12px; align-items: start;
+      padding: 8px; margin-inline: -8px; border-radius: 16px;
+      transition: opacity .2s;
+    }
+    .row time { padding-top: 10px; font-size: 15px; font-weight: 600; color: var(--text-2); }
+    .row .body { display: grid; gap: 2px; padding-top: 2px; min-width: 0; }
+    .row .title { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
+    .row .sub { font-size: 13px; color: var(--text-3); }
+    .row .note { font-size: 13px; color: var(--text-2); }
+    .row.is-point .tile { width: 40px; height: 40px; }
+    .row.is-past { opacity: .4; }
+    .row.is-now { background: var(--press); }
+    .row.is-now time { color: var(--blue); }
+    .pill {
+      font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 6px; letter-spacing: 0;
+      background: var(--blue); color: #fff;
+    }
+    .pill.soft { background: var(--press); color: var(--text-3); }
+    .row.is-now .pill.soft { background: var(--card); }
+
+    /* 한 주 일정표 */
+    .section-title { margin: 8px 0 0; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+    .week { display: grid; grid-template-columns: 26px repeat(7, minmax(0, 1fr)); column-gap: 3px; }
+    .week .wh {
+      display: grid; place-items: center; height: 30px; margin-bottom: 6px;
+      font-size: 13px; font-weight: 600; color: var(--text-3); border-radius: 10px;
+    }
+    .week .wh.is-today { color: var(--blue); }
+    .week .wh[aria-pressed="true"] { background: var(--blue); color: #fff; }
+    .axis { position: relative; height: calc(18 * var(--H)); }
+    .axis span {
+      position: absolute; right: 4px; translate: 0 -50%;
+      font-size: 10px; color: var(--text-3); font-variant-numeric: tabular-nums;
+    }
+    .col {
+      position: relative; height: calc(18 * var(--H)); border-radius: 8px;
+      background: repeating-linear-gradient(to bottom, var(--line) 0 1px, transparent 1px var(--H));
+      background-size: 100% var(--H); background-position: 0 0;
+      cursor: pointer;
+    }
+    .col.is-sel { box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 35%, transparent); }
+    .blk {
+      position: absolute; left: 1px; right: 1px;
+      display: grid; place-content: center; justify-items: center; gap: 2px;
+      border-radius: 6px; overflow: hidden;
+      background: color-mix(in srgb, var(--c) var(--mix), var(--card));
+      font-size: 10px; font-weight: 600; color: var(--text); letter-spacing: -0.03em;
+    }
+    .blk.is-flex {
+      background: repeating-linear-gradient(135deg,
+        color-mix(in srgb, var(--c) var(--mix), var(--card)) 0 4px,
+        color-mix(in srgb, var(--c) var(--mix-soft), var(--card)) 4px 8px);
+    }
+    .blk .emoji { font-size: 13px; }
+    .mark { position: absolute; left: 0; right: 0; height: 2px; translate: 0 -50%; background: var(--c); border-radius: 2px; z-index: 1; }
+    .mark .emoji {
+      position: absolute; right: -2px; top: 50%; translate: 0 -50%;
+      font-size: 12px; background: var(--card); border-radius: 50%; padding: 1px;
+    }
+    .nowline { position: absolute; left: -2px; right: -2px; height: 2px; background: var(--now); z-index: 2; translate: 0 -50%; }
+    .nowline::before { content: ""; position: absolute; left: -3px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--now); }
+
+    .legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 16px; font-size: 12px; color: var(--text-2); }
+    .legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .legend i { width: 10px; height: 10px; border-radius: 3px; background: color-mix(in srgb, var(--c) 70%, var(--card)); }
+    .legend .flex i {
+      background: repeating-linear-gradient(135deg, var(--text-3) 0 2px, transparent 2px 4px);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="bar">
+    <div class="wrap">
+      <div>
+        <a class="back" href="./" aria-label="홈으로">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <h1>하루 루틴</h1>
+    <div class="days" id="days" role="group" aria-label="요일"></div>
+
+    <div class="head">
+      <h2 id="date"></h2>
+      <span class="badge" id="badge"></span>
+    </div>
+
+    <section class="card now" id="now" hidden>
+      <span class="tile"><span class="emoji" id="nowEmoji"></span></span>
+      <span class="eyebrow" id="nowLabel"></span>
+      <span class="title" id="nowTitle"></span>
+      <span class="sub num" id="nowSub"></span>
+      <span class="track"><i id="nowBar"></i></span>
+    </section>
+
+    <section class="card">
+      <ol class="timeline" id="timeline"></ol>
+    </section>
+
+    <h2 class="section-title">한 주 일정표</h2>
+    <section class="card">
+      <div class="week" id="week"></div>
+      <div class="legend" id="legend"></div>
+    </section>
+  </main>
+
+  <script>
+    const CATS = {
+      wake: '기상·점호', duty: '과업', rest: '휴식', workout: '운동', meal: '식사',
+      study: '공부·연등', free: '저녁 시간', sleep: '취침', phone: '핸드폰'
+    };
+
+    const morning = [
+      { s: '06:30', title: '기상', emoji: '⏰', cat: 'wake' },
+      { s: '08:00', alt: '08:30', e: '11:00', title: '오전 과업', short: '과업', emoji: '🪖', cat: 'duty', note: '08:00 또는 08:30 시작' },
+      { s: '11:00', e: '13:00', title: '휴식', short: '휴식', emoji: '☕', cat: 'rest' },
+    ];
+    const afternoon = { s: '13:00', e: '17:00', title: '오후 과업', short: '과업', emoji: '🪖', cat: 'duty' };
+    const evening = [
+      { s: '17:00', e: '22:00', title: '저녁 시간', short: '저녁', emoji: '🌙', cat: 'free', flex: true, note: '매일 달라요' },
+      { s: '22:00', e: '24:00', title: '연등', short: '연등', emoji: '💡', cat: 'study' },
+    ];
+
+    const ROUTINES = {
+      weekday: { badge: '평일', cat: 'duty', items: [...morning, afternoon, ...evening] },
+      wed: { badge: '자율전투체력', cat: 'workout', items: [
+        ...morning,
+        { s: '13:00', e: '17:00', title: '자율전투체력', short: '체력', emoji: '💪', cat: 'workout', note: '운동 끝내는 날' },
+        ...evening,
+      ]},
+      fri: { badge: '드림데이', cat: 'phone', items: [
+        ...morning, afternoon,
+        { s: '16:00', title: '핸드폰 수령', emoji: '📱', cat: 'phone' },
+        ...evening,
+      ]},
+      weekend: { badge: '주말', cat: 'meal', items: [
+        { s: '07:00', e: '07:30', title: '총기상·점호', short: '점호', emoji: '🫡', cat: 'wake' },
+        { s: '07:30', e: '09:00', title: '취침', short: '취침', emoji: '😴', cat: 'sleep', flex: true, note: '브런치 전까지' },
+        { s: '09:00', e: '11:00', title: '브런치', short: '브런치', emoji: '🥞', cat: 'meal', flex: true, note: '09~11시 사이, 주마다 달라요' },
+        { s: '11:00', e: '12:00', title: '소화', short: '소화', emoji: '🍵', cat: 'rest', flex: true, note: '브런치 먹고 12시까지' },
+        { s: '12:00', e: '17:00', title: '운동', short: '운동', emoji: '💪', cat: 'workout' },
+        { s: '17:00', e: '18:00', title: '석식', short: '석식', emoji: '🍚', cat: 'meal', flex: true, note: '17시 이후' },
+        { s: '18:00', e: '20:55', title: '사이트 개발·공부', short: '공부', emoji: '💻', cat: 'study' },
+        { s: '20:55', title: '복귀', emoji: '🚶', cat: 'sleep', note: '공부 마무리하고 올라오기' },
+        { s: '22:00', e: '24:00', title: '연등', short: '연등', emoji: '💡', cat: 'study' },
+      ]},
+    };
+    // 월=0 … 일=6
+    const WEEK = ['weekday', 'weekday', 'wed', 'weekday', 'fri', 'weekend', 'weekend'];
+    const DAY_NAMES = ['월', '화', '수', '목', '금', '토', '일'];
+    const START = 6 * 60, END = 24 * 60;
+
+    const min = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+    const hhmm = m => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    const dur = m => {
+      const h = Math.floor(m / 60), r = m % 60;
+      return h && r ? `${h}시간 ${r}분` : h ? `${h}시간` : `${r}분`;
+    };
+    const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
+
+    const today = new Date();
+    const todayIdx = (today.getDay() + 6) % 7;
+    const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - todayIdx);
+    const dateOf = i => new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
+    let sel = todayIdx;
+
+    function nowMin() { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); }
+
+    function renderDays() {
+      const box = document.getElementById('days');
+      box.innerHTML = '';
+      DAY_NAMES.forEach((name, i) => {
+        const b = el('button', 'day' + (i === todayIdx ? ' is-today' : ''));
+        b.setAttribute('aria-pressed', i === sel);
+        b.innerHTML = `<small>${name}</small><b class="num">${dateOf(i).getDate()}</b>`;
+        b.onclick = () => select(i);
+        box.append(b);
+      });
+    }
+
+    function renderHead() {
+      const d = dateOf(sel), r = ROUTINES[WEEK[sel]];
+      document.getElementById('date').textContent = `${d.getMonth() + 1}월 ${d.getDate()}일 ${DAY_NAMES[sel]}요일`;
+      const badge = document.getElementById('badge');
+      badge.textContent = r.badge;
+      badge.className = 'badge cat-' + r.cat;
+    }
+
+    function renderNow() {
+      const card = document.getElementById('now');
+      if (sel !== todayIdx) { card.hidden = true; return; }
+      const m = nowMin(), items = ROUTINES[WEEK[sel]].items;
+      const cur = items.find(it => it.e && m >= min(it.s) && m < min(it.e));
+      const next = items.find(it => min(it.s) > m) || items[0];
+      const it = cur || next;
+      card.hidden = false;
+      card.className = 'card now cat-' + it.cat;
+      document.getElementById('nowEmoji').textContent = it.emoji;
+      document.getElementById('nowTitle').textContent = it.title;
+      const bar = document.getElementById('nowBar');
+      if (cur) {
+        const s = min(cur.s), e = min(cur.e);
+        document.getElementById('nowLabel').textContent = '지금';
+        document.getElementById('nowSub').textContent = `${hhmm(e)}까지 · ${dur(e - m)} 남음`;
+        bar.style.width = `${((m - s) / (e - s)) * 100}%`;
+        bar.parentElement.hidden = false;
+      } else {
+        const s = min(next.s), wait = s > m ? s - m : s + 1440 - m;
+        document.getElementById('nowLabel').textContent = '다음';
+        document.getElementById('nowSub').textContent = `${next.s} 시작 · ${dur(wait)} 후`;
+        bar.parentElement.hidden = true;
+      }
+    }
+
+    function renderTimeline() {
+      const list = document.getElementById('timeline');
+      list.innerHTML = '';
+      const isToday = sel === todayIdx, m = nowMin();
+      for (const it of ROUTINES[WEEK[sel]].items) {
+        const s = min(it.s), e = it.e ? min(it.e) : null;
+        const li = el('li', `row cat-${it.cat}${e ? '' : ' is-point'}`);
+        const now = isToday && e && m >= s && m < e;
+        if (isToday && !now && (e ? m >= e : m >= s)) li.classList.add('is-past');
+        if (now) li.classList.add('is-now');
+        const tags = (now ? '<span class="pill">지금</span>' : '') + (it.flex ? '<span class="pill soft">변동</span>' : '');
+        li.innerHTML = `
+          <time class="num">${it.s}</time>
+          <span class="tile"><span class="emoji" aria-hidden="true">${it.emoji}</span></span>
+          <div class="body">
+            <span class="title">${it.title}${tags}</span>
+            ${e ? `<span class="sub num">${hhmm(e)}까지 · ${dur(e - s)}</span>` : ''}
+            ${it.note ? `<span class="note">${it.note}</span>` : ''}
+          </div>`;
+        list.append(li);
+      }
+    }
+
+    function renderWeek() {
+      const box = document.getElementById('week');
+      box.innerHTML = '';
+      box.append(el('span'));
+      DAY_NAMES.forEach((n, i) => {
+        const h = el('button', 'wh' + (i === todayIdx ? ' is-today' : ''), n);
+        h.setAttribute('aria-pressed', i === sel);
+        h.onclick = () => select(i);
+        box.append(h);
+      });
+      const axis = el('div', 'axis');
+      for (let h = 6; h <= 24; h += 2) {
+        const t = el('span', '', String(h % 24).padStart(2, '0'));
+        t.style.top = `calc(${h - 6} * var(--H))`;
+        axis.append(t);
+      }
+      box.append(axis);
+      const H = v => `calc(${(v - START) / 60} * var(--H))`;
+      const m = nowMin();
+      DAY_NAMES.forEach((n, i) => {
+        const col = el('div', 'col' + (i === sel ? ' is-sel' : ''));
+        col.onclick = () => select(i);
+        col.setAttribute('aria-label', `${n}요일 보기`);
+        for (const it of ROUTINES[WEEK[i]].items) {
+          const s = min(it.s);
+          if (!it.e) {
+            const mk = el('span', `mark cat-${it.cat}`, `<span class="emoji" aria-hidden="true">${it.emoji}</span>`);
+            mk.style.top = H(s);
+            col.append(mk);
+            continue;
+          }
+          const e = min(it.e), len = e - s;
+          const add = (from, to, flex, label) => {
+            const b = el('div', `blk cat-${it.cat}${flex ? ' is-flex' : ''}`);
+            b.style.top = H(from);
+            b.style.height = `calc(${(to - from) / 60} * var(--H) - 2px)`;
+            if (label) {
+              const tall = (to - from) >= 105;
+              b.innerHTML = (to - from) >= 50 ? `<span class="emoji" aria-hidden="true">${it.emoji}</span>${tall ? `<span>${it.short}</span>` : ''}` : '';
+            }
+            b.title = `${it.title} ${it.s}–${hhmm(e)}`;
+            col.append(b);
+          };
+          if (it.alt) {
+            add(s, min(it.alt), true, false);
+            add(min(it.alt), e, false, true);
+          } else {
+            add(s, e, it.flex, true);
+          }
+        }
+        if (i === todayIdx && m >= START && m < END) {
+          const nl = el('span', 'nowline');
+          nl.style.top = H(m);
+          col.append(nl);
+        }
+        box.append(col);
+      });
+
+      const legend = document.getElementById('legend');
+      if (!legend.childElementCount) {
+        const used = new Set(Object.values(ROUTINES).flatMap(r => r.items.filter(it => it.e).map(it => it.cat)));
+        for (const [k, name] of Object.entries(CATS)) {
+          if (!used.has(k)) continue;
+          legend.append(el('span', `cat-${k}`, `<i></i>${name}`));
+        }
+        legend.append(el('span', 'flex', '<i></i>시간 변동'));
+      }
+    }
+
+    function select(i) {
+      sel = i;
+      render();
+    }
+    function render() {
+      renderDays();
+      renderHead();
+      renderNow();
+      renderTimeline();
+      renderWeek();
+    }
+    render();
+    setInterval(() => { renderNow(); renderTimeline(); renderWeek(); }, 30000);
+  </script>
+</body>
+</html>
