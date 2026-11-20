@@ -12,12 +12,42 @@
       "date": "2026-11-21",
       "checked": false,
       "todos": [
-        { "emoji": "😴", "title": "총기상 후 조금 취침", "done": false },
-        { "emoji": "⚡", "title": "전기 공부", "amount": "2시간", "done": false },
-        { "emoji": "💻", "title": "사이트 개발", "amount": "2시간", "done": false },
-        { "emoji": "💪", "title": "운동", "amount": "3시간", "done": false },
-        { "emoji": "💌", "title": "감사한 점 적기", "amount": "3개", "done": false },
-        { "emoji": "🧘", "title": "스트레칭", "amount": "10분", "done": false }
+        {
+          "emoji": "😴",
+          "title": "총기상 후 취침",
+          "done": false,
+          "amount": "조금"
+        },
+        {
+          "emoji": "⚡",
+          "title": "전기 공부",
+          "done": false,
+          "minutes": 120
+        },
+        {
+          "emoji": "💻",
+          "title": "사이트 개발",
+          "done": false,
+          "minutes": 120
+        },
+        {
+          "emoji": "💪",
+          "title": "운동",
+          "done": false,
+          "minutes": 180
+        },
+        {
+          "emoji": "💌",
+          "title": "감사한 점 적기",
+          "amount": "3개",
+          "done": false
+        },
+        {
+          "emoji": "🧘",
+          "title": "스트레칭",
+          "done": false,
+          "minutes": 10
+        }
       ],
       "thanks": []
     }

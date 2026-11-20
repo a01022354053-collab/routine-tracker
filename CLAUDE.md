@@ -4,19 +4,22 @@
 
 ## 사이트
 - GitHub Pages가 `claude/adoring-shannon-8ncj2s` 브랜치 루트를 배포한다: https://a01022354053-collab.github.io/routine-tracker/
-- `index.html` 오늘 할 일(메인) · `archive.html` 저장소(달별 달성률 달력, 날짜별 기록) · `assets/` 공용 CSS/JS
+- `index.html` 오늘 루틴(메인: 달력 + 고른 날의 할 일) · `archive.html` 저장소(달별 달성률, 날짜별 기록)
+- `money.html` 돈 관리 · `fixed.html` 고정 지출 · `items.html` 내 물건 · `shopping.html` 필요한 물건 — 아직 빈 화면
+- 이동은 왼쪽 위 3줄 메뉴. 메뉴 항목과 상단 바는 `assets/app.js`의 `MENU`, `mountTopbar`에 있다. 공용 CSS는 `assets/style.css`
 - 디자인: 토스 느낌, Pretendard 글꼴, Tossface 이모지. 화면에 군더더기 문구를 넣지 않는다.
 
 ## 기록 형식 (`data/days.json`)
 ```json
 { "days": [
   { "date": "2026-11-21", "checked": false,
-    "todos": [ { "emoji": "⚡", "title": "전기 공부", "amount": "2시간", "done": false } ],
+    "todos": [ { "emoji": "⚡", "title": "전기 공부", "minutes": 120, "done": false },
+               { "emoji": "💌", "title": "감사한 점 적기", "amount": "3개", "done": false } ],
     "thanks": [] },
   { "date": "2026-11-20", "checked": true, "rate": 100, "memo": "할 일 모두 완료", "todos": [], "thanks": [] }
 ] }
 ```
-- `todos`: 할 일. `emoji`는 Tossface에 있는 이모지 하나, `title`은 짧게, 시간·개수는 `amount`로 분리.
+- `todos`: 할 일. `emoji`는 Tossface에 있는 이모지 하나, `title`은 짧게. 시간은 `minutes`(분, 숫자)로 적으면 화면에 시간과 시간 배분 막대가 나온다. 시간이 아닌 양(3개, 조금)은 `amount`.
 - `checked`: 그날 결과를 사용자에게 확인받았으면 `true`. 달성률 계산에는 체크된 날만 들어간다.
 - `rate`, `memo`: 할 일 목록 없이 결과만 들었을 때(예: "오늘 다 했어") 쓴다. 목록이 있으면 달성률은 `done` 비율로 계산한다.
 - `thanks`: 사용자가 적어준 그날의 감사한 점(보통 3개).

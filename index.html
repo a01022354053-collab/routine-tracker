@@ -9,16 +9,47 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/toss/tossface@v1.6.1/dist/tossface.css">
   <link rel="stylesheet" href="assets/style.css">
+  <style>
+    .cal-card { padding: 14px 14px 12px; }
+    .cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 6px 6px 0; }
+    .mcal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+    .mcal .wd { text-align: center; font-size: 12px; font-weight: 600; color: var(--text-3); padding: 6px 0 6px; }
+    .mcal button { position: relative; height: 46px; display: grid; place-items: center; border-radius: 12px; }
+    .mcal button:disabled { cursor: default; }
+    .mcal .n {
+      width: 34px; height: 34px; border-radius: 50%;
+      display: grid; place-items: center;
+      font-size: 15px; font-weight: 600; color: var(--text-2);
+      transition: background .15s, color .15s;
+    }
+    .mcal button.today .n { color: var(--blue); font-weight: 800; }
+    .mcal button[aria-pressed="true"] .n { background: var(--blue); color: var(--on-blue); }
+    .mcal button:not([aria-pressed="true"]):active .n { background: var(--press); }
+    .mcal .dot { position: absolute; bottom: 2px; width: 5px; height: 5px; border-radius: 50%; }
+    .dot.full { background: var(--blue); }
+    .dot.part { background: color-mix(in srgb, var(--blue) 45%, var(--card)); }
+    .dot.plan { background: var(--line); box-shadow: inset 0 0 0 1.5px var(--text-3); }
+  </style>
 </head>
 <body>
   <main class="wrap">
-    <p class="brand">일상 매니저</p>
+    <section class="card cal-card" aria-label="달력">
+      <div class="cal-head">
+        <div class="monthnav">
+          <button id="prev" aria-label="이전 달"></button>
+          <b id="calTitle" class="num"></b>
+          <button id="next" aria-label="다음 달"></button>
+        </div>
+        <span class="pill num" id="calRate" hidden></span>
+      </div>
+      <div class="mcal" id="cal"></div>
+    </section>
 
-    <div>
-      <p class="date" id="todayDate"></p>
-      <h1>오늘 할 일</h1>
+    <div class="sec-head">
+      <h2 id="selTitle"></h2>
+      <p class="date" id="selDate"></p>
     </div>
-    <section class="card" id="today"><p class="empty">불러오는 중…</p></section>
+    <section class="card" id="sel"><p class="empty">불러오는 중…</p></section>
 
     <div id="tomorrowBox" hidden>
       <div class="sec-head">
@@ -27,63 +58,71 @@
       </div>
       <section class="card" id="tomorrow" style="margin-top: 12px"></section>
     </div>
-
-    <a class="card month-link" id="month" href="archive.html" hidden>
-      <span class="label" id="monthLabel"></span>
-      <svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span class="value num" id="monthValue"></span>
-      <span class="bar"><i id="monthBar"></i></span>
-    </a>
   </main>
-
-  <footer class="tabbar">
-    <nav aria-label="메뉴">
-      <a class="tab" href="./" aria-current="page">
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="3.5" width="16" height="17" rx="4" stroke="currentColor" stroke-width="2"/><path d="M8.5 9.5l1.6 1.6 3-3.2M8.5 15h7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        오늘
-      </a>
-      <a class="tab" href="archive.html">
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="4" width="17" height="5" rx="2" stroke="currentColor" stroke-width="2"/><path d="M5 9v8a3 3 0 003 3h8a3 3 0 003-3V9M10 13h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        저장소
-      </a>
-    </nav>
-  </footer>
 
   <script src="assets/app.js"></script>
   <script>
-    const now = new Date();
-    const todayKey = keyOf(now), tomorrowKey = keyOf(addDays(now, 1));
-    document.getElementById('todayDate').textContent = dayLabel(todayKey);
+    mountTopbar('today');
+    document.getElementById('prev').innerHTML = ICON.prev;
+    document.getElementById('next').innerHTML = ICON.next;
 
-    function todayCard(day) {
-      if (!day) return '<p class="empty">등록된 할 일이 없어요</p>';
-      const todos = day.todos || [];
-      const rate = rateOf(day);
-      if (!todos.length) {
-        return `<div class="summary">${ringHTML(rate)}<div><div class="big">${esc(day.memo || (day.checked ? `${rate}% 달성` : '등록된 할 일이 없어요'))}</div></div></div>`;
+    const now = new Date();
+    const todayKey = keyOf(now);
+    const rel = { [keyOf(addDays(now, -1))]: '어제', [todayKey]: '오늘', [keyOf(addDays(now, 1))]: '내일' };
+    let y = now.getFullYear(), m = now.getMonth(), sel = todayKey, DAYS = [], loaded = false;
+    const byDate = () => Object.fromEntries(DAYS.map(d => [d.date, d]));
+
+    function renderCal() {
+      const map = byDate();
+      document.getElementById('calTitle').textContent = `${y}년 ${m + 1}월`;
+      const st = monthStats(DAYS, y, m), pill = document.getElementById('calRate');
+      pill.hidden = st.rate == null;
+      pill.textContent = `달성률 ${st.rate}%`;
+
+      const lead = (new Date(y, m, 1).getDay() + 6) % 7, last = new Date(y, m + 1, 0).getDate();
+      let html = ['월', '화', '수', '목', '금', '토', '일'].map(w => `<span class="wd">${w}</span>`).join('');
+      for (let i = 0; i < lead; i++) html += '<span></span>';
+      for (let d = 1; d <= last; d++) {
+        const k = `${y}-${pad(m + 1)}-${pad(d)}`, rec = map[k];
+        let dot = '', label = dayLabel(k);
+        if (rec && rec.checked) {
+          const r = rateOf(rec);
+          dot = `<i class="dot ${r >= 100 ? 'full' : 'part'}"></i>`;
+          label += ` 달성률 ${r}%`;
+        } else if (rec) {
+          dot = '<i class="dot plan"></i>';
+          label += ' 할 일 있음';
+        }
+        html += `<button class="${k === todayKey ? 'today' : ''}" data-k="${k}" aria-pressed="${k === sel}" aria-label="${label}"><span class="n num">${d}</span>${dot}</button>`;
       }
-      const done = todos.filter(t => t.done).length;
-      const sub = day.checked ? '체크 완료' : done === todos.length ? '모두 끝냈어요' : `${todos.length - done}개 남았어요`;
-      return `<div class="summary">${ringHTML(rate)}<div><div class="big num">${todos.length}개 중 ${done}개 완료</div><div class="sub">${sub}</div></div></div>${tasksHTML(todos)}`;
+      const cal = document.getElementById('cal');
+      cal.innerHTML = html;
+      cal.querySelectorAll('button').forEach(b => (b.onclick = () => { sel = b.dataset.k; render(); }));
     }
 
-    loadDays().then(days => {
-      document.getElementById('today').innerHTML = todayCard(days.find(d => d.date === todayKey));
+    function renderSel() {
+      const map = byDate();
+      document.getElementById('selTitle').textContent = `${rel[sel] || '그날'} 할 일`;
+      document.getElementById('selDate').textContent = dayLabel(sel);
+      if (loaded) document.getElementById('sel').innerHTML = dayCardHTML(map[sel]);
 
-      const tmr = days.find(d => d.date === tomorrowKey);
-      if (tmr && (tmr.todos || []).length) {
-        document.getElementById('tomorrowDate').textContent = dayLabel(tomorrowKey);
-        document.getElementById('tomorrow').innerHTML = tasksHTML(tmr.todos);
-        document.getElementById('tomorrowBox').hidden = false;
+      const tk = keyOf(addDays(parseKey(sel), 1)), tmr = map[tk];
+      const show = sel === todayKey && tmr && (tmr.todos || []).length;
+      document.getElementById('tomorrowBox').hidden = !show;
+      if (show) {
+        document.getElementById('tomorrowDate').textContent = dayLabel(tk);
+        document.getElementById('tomorrow').innerHTML = dayCardHTML(tmr);
       }
+    }
 
-      const st = monthStats(days, now.getFullYear(), now.getMonth());
-      document.getElementById('monthLabel').textContent = `${now.getMonth() + 1}월 달성률 · 기록 ${st.count}일`;
-      document.getElementById('monthValue').textContent = st.rate == null ? '아직 기록 없음' : `${st.rate}%`;
-      document.getElementById('monthBar').style.width = `${st.rate ?? 0}%`;
-      document.getElementById('month').hidden = false;
-    }).catch(() => {
-      document.getElementById('today').innerHTML = '<p class="empty">기록을 불러오지 못했어요. 새로고침해 주세요.</p>';
+    function render() { renderCal(); renderSel(); }
+    const shift = n => { m += n; if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } renderCal(); };
+    document.getElementById('prev').onclick = () => shift(-1);
+    document.getElementById('next').onclick = () => shift(1);
+
+    render();
+    loadDays().then(d => { DAYS = d; loaded = true; render(); }).catch(() => {
+      document.getElementById('sel').innerHTML = '<p class="empty">기록을 불러오지 못했어요. 새로고침해 주세요.</p>';
     });
   </script>
 </body>

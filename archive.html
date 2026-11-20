@@ -10,12 +10,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/toss/tossface@v1.6.1/dist/tossface.css">
   <link rel="stylesheet" href="assets/style.css">
   <style>
-    .monthnav { display: flex; align-items: center; gap: 4px; margin-left: -8px; }
-    .monthnav b { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; min-width: 7.5em; text-align: center; }
-    .monthnav button { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--text-2); }
-    .monthnav button:active { background: var(--press); }
-    .monthnav svg { width: 20px; height: 20px; }
-
+    .monthnav { margin-left: -8px; }
     .stat .label { font-size: 14px; color: var(--text-3); font-weight: 500; }
     .stat .value { font-size: 34px; font-weight: 700; letter-spacing: -0.03em; margin-top: 2px; }
     .stat .sub { font-size: 14px; color: var(--text-2); margin-top: 4px; }
@@ -32,9 +27,7 @@
     .cal .c.has { background: color-mix(in srgb, var(--blue) var(--p), var(--cell)); color: var(--text); }
     .cal .c.has.hi { color: var(--on-blue); }
     .cal .c.planned { background: none; outline: 1.5px dashed var(--text-3); outline-offset: -1.5px; color: var(--text-2); }
-    .cal .c.today::after {
-      content: ""; position: absolute; bottom: 12%; width: 4px; height: 4px; border-radius: 50%; background: currentColor;
-    }
+    .cal .c.today::after { content: ""; position: absolute; bottom: 12%; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
     .cal-key { display: flex; gap: 14px; margin-top: 14px; font-size: 12px; color: var(--text-3); }
     .cal-key span { display: inline-flex; align-items: center; gap: 6px; }
     .cal-key i { width: 12px; height: 12px; border-radius: 4px; }
@@ -42,29 +35,27 @@
     .cal-key .k-hi { background: var(--blue); }
     .cal-key .k-plan { outline: 1.5px dashed var(--text-3); outline-offset: -1.5px; }
 
-    .day { display: grid; gap: 4px; }
+    .list { display: grid; gap: 12px; }
     .day header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .day h3 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+    .day .meta { margin: 4px 0 0; font-size: 14px; color: var(--text-3); }
     .day .memo { margin: 6px 0 0; font-size: 15px; color: var(--text-2); }
-    .day .tasks { margin-top: 6px; }
-    .day .task { padding-block: 7px; grid-template-columns: 36px 1fr 24px; }
+    .day .timebar { margin-top: 14px; height: 8px; }
+    .day .tasks { margin-top: 8px; }
+    .day .task { padding-block: 7px; grid-template-columns: 36px minmax(0, 1fr) auto 24px; }
     .day .tile { width: 36px; height: 36px; border-radius: 12px; font-size: 19px; }
     .day .check { width: 24px; height: 24px; }
     .thanks { margin-top: 10px; padding: 14px 16px; border-radius: 16px; background: var(--press); }
     .thanks p { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--text-3); }
     .thanks ol { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; font-size: 15px; line-height: 1.5; }
-    .list { display: grid; gap: 12px; }
   </style>
 </head>
 <body>
   <main class="wrap">
-    <p class="brand">일상 매니저</p>
-    <h1>저장소</h1>
-
     <div class="monthnav">
-      <button id="prev" aria-label="이전 달"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button id="prev" aria-label="이전 달"></button>
       <b id="monthTitle" class="num"></b>
-      <button id="next" aria-label="다음 달"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button id="next" aria-label="다음 달"></button>
     </div>
 
     <section class="card">
@@ -85,29 +76,19 @@
     <div class="list" id="list"><p class="empty">불러오는 중…</p></div>
   </main>
 
-  <footer class="tabbar">
-    <nav aria-label="메뉴">
-      <a class="tab" href="./">
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="3.5" width="16" height="17" rx="4" stroke="currentColor" stroke-width="2"/><path d="M8.5 9.5l1.6 1.6 3-3.2M8.5 15h7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        오늘
-      </a>
-      <a class="tab" href="archive.html" aria-current="page">
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="4" width="17" height="5" rx="2" stroke="currentColor" stroke-width="2"/><path d="M5 9v8a3 3 0 003 3h8a3 3 0 003-3V9M10 13h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        저장소
-      </a>
-    </nav>
-  </footer>
-
   <script src="assets/app.js"></script>
   <script>
+    mountTopbar('archive');
+    document.getElementById('prev').innerHTML = ICON.prev;
+    document.getElementById('next').innerHTML = ICON.next;
+
     const now = new Date();
     const todayKey = keyOf(now);
     let y = now.getFullYear(), m = now.getMonth(), DAYS = [];
 
     function renderCal() {
       const byDate = Object.fromEntries(DAYS.map(d => [d.date, d]));
-      const first = new Date(y, m, 1), last = new Date(y, m + 1, 0).getDate();
-      const lead = (first.getDay() + 6) % 7;
+      const lead = (new Date(y, m, 1).getDay() + 6) % 7, last = new Date(y, m + 1, 0).getDate();
       let html = ['월', '화', '수', '목', '금', '토', '일'].map(w => `<span class="wd">${w}</span>`).join('');
       for (let i = 0; i < lead; i++) html += '<span class="c blank"></span>';
       for (let d = 1; d <= last; d++) {
@@ -144,10 +125,12 @@
       list.innerHTML = days.map(d => {
         const tag = d.checked ? `<span class="pill num">${rateOf(d)}%</span>` : '<span class="pill soft">예정</span>';
         const todos = d.todos || [], thanks = (d.thanks || []).filter(Boolean);
+        const total = todos.reduce((s, t) => s + (t.minutes || 0), 0);
         return `<article class="card day">
           <header><h3>${dayLabel(d.date)}</h3>${tag}</header>
+          ${total ? `<p class="meta num">할 일 ${todos.length}개 · 계획 ${fmtMin(total)}</p>` : ''}
           ${d.memo ? `<p class="memo">${esc(d.memo)}</p>` : ''}
-          ${todos.length ? tasksHTML(todos) : ''}
+          ${todos.length ? timeBarHTML(todos) + tasksHTML(todos) : ''}
           ${thanks.length ? `<div class="thanks"><p>감사한 점</p><ol>${thanks.map(t => `<li>${esc(t)}</li>`).join('')}</ol></div>` : ''}
         </article>`;
       }).join('');
