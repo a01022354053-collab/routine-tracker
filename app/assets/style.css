@@ -380,6 +380,54 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .thanks p { margin: 0 0 6px; font-size: 12px; font-weight: 700; color: var(--pink); }
 .thanks ol { margin: 0; padding-left: 1.2em; display: grid; gap: 4px; font-size: 15px; line-height: 1.5; }
 
+/* ---------- 지출 · 기록 ---------- */
+.spend { display: grid; gap: 14px; }
+.spend .map-head .chip { margin-left: auto; cursor: pointer; }
+.spend-top { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.spent { font-family: var(--display); font-size: 34px; font-weight: 900; line-height: 1.1; margin-top: 4px; }
+.spend-top .left { text-align: right; font-family: var(--display); font-size: 15px; font-weight: 700; color: var(--lime); }
+.spend-top .left small { display: block; font-family: var(--font); font-size: 12px; font-weight: 600; color: var(--ink-3); margin-top: 2px; }
+.spend-top .left.over { color: var(--red); }
+.spendbar i { background: linear-gradient(90deg, var(--lime), var(--yellow)); }
+.spendbar.over i { background: linear-gradient(90deg, var(--orange), var(--red)); }
+.exp-days { display: grid; gap: 12px; }
+.exp-day { display: grid; gap: 4px; }
+.exp-date { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--ink-3); padding: 0 2px; }
+.exp-date b { font-size: 14px; color: var(--ink); }
+.exp-date .num { margin-left: auto; font-family: var(--display); font-size: 12px; }
+.exp {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center;
+  padding: 11px 12px; border-radius: 14px; background: rgba(255, 255, 255, .05); text-align: left;
+  transition: background .15s, transform .15s var(--pop);
+}
+.exp:active { transform: scale(.98); background: rgba(255, 255, 255, .09); }
+.exp .t { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exp .a { font-family: var(--display); font-size: 14px; font-weight: 700; }
+.exp .chip { font-size: 11px; padding: 3px 8px; }
+
+.hist-box { display: grid; gap: 8px; }
+.hist { border-radius: 14px; background: rgba(255, 255, 255, .04); }
+.hist summary {
+  display: flex; align-items: baseline; gap: 8px; padding: 12px 14px; cursor: pointer; list-style: none;
+  font-size: 14px; color: var(--ink-2);
+}
+.hist summary::-webkit-details-marker { display: none; }
+.hist summary::after { content: ""; margin-left: 8px; width: 8px; height: 8px; border-right: 2px solid var(--ink-3); border-bottom: 2px solid var(--ink-3); rotate: 45deg; translate: 0 -2px; transition: rotate .2s; }
+.hist[open] summary::after { rotate: 225deg; translate: 0 2px; }
+.hist summary b { font-size: 14px; color: var(--ink); }
+.hist summary .cnt { margin-left: auto; font-size: 12px; color: var(--ink-3); }
+.hist ul { list-style: none; margin: 0; padding: 0 14px 12px; display: grid; gap: 8px; }
+.hist li { display: grid; grid-template-columns: 42px auto minmax(0, 1fr); gap: 8px; font-size: 14px; line-height: 1.5; }
+.hist li:not(:has(.who)) { grid-template-columns: 42px minmax(0, 1fr); }
+.hist .tm { font-family: var(--display); font-size: 11px; color: var(--ink-3); padding-top: 3px; }
+.hist .who { font-size: 12px; font-weight: 700; color: var(--yellow); padding-top: 1px; }
+.hist li.me .who { color: var(--violet); }
+.hist .tx { white-space: pre-wrap; word-break: break-word; color: var(--ink-2); }
+.backup { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+.backup b { display: block; font-size: 16px; font-weight: 800; }
+.backup small { display: block; font-size: 13px; color: var(--ink-3); margin-top: 3px; line-height: 1.4; }
+.backup .btn { width: auto; padding: 0 18px; height: 46px; font-size: 15px; }
+
 /* ---------- 빈 화면 ---------- */
 .soon { display: grid; justify-items: center; gap: 14px; padding: 48px 16px; text-align: center; }
 .soon .big { font-size: 64px; animation: float 3.2s ease-in-out infinite; filter: drop-shadow(0 10px 20px rgba(0, 0, 0, .4)); }

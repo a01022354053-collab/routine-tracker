@@ -52,17 +52,30 @@ const same = (a, b) => stable(a) === stable(b);
 /* ---------- 상태 ---------- */
 let NOW = new Date();
 let TODAY = keyOf(NOW);
-const S = { days: {}, workout: {}, split: { ...DEFAULT_SPLIT }, money: clone(DEFAULT_MONEY), chat: [] };
+// 모든 기록은 지우지 않는다: 할 일은 removed로 숨기고, 대화·변경·지출·잔액은 날짜/달마다 쌓는다
+const S = {
+  days: {}, workout: {}, split: { ...DEFAULT_SPLIT }, money: clone(DEFAULT_MONEY),
+  chatDays: {},   // 날짜 → 그날 대화
+  logDays: {},    // 날짜 → 그날 바꾼 것들
+  spend: {},      // 'YYYY-MM' → 지출 목록
+  balhist: {},    // 'YYYY-MM' → 잔액 기록
+};
 const UI = {
   status: 'loading', // loading | ok | slow | nodb
   sel: TODAY, y: NOW.getFullYear(), m: NOW.getMonth(), ay: NOW.getFullYear(), am: NOW.getMonth(),
+  my: NOW.getFullYear(), mm: NOW.getMonth(), extras: {},
   view: null, dataPainted: false, still: false,
   pending: null, ctl: null, undo: {}, sample: undefined,
 };
 let DB = null, SAMPLE = null;
 
 /* ---------- 계산 ---------- */
-const todosOf = date => S.days[date]?.todos || [];
+const rawTodos = date => S.days[date]?.todos || [];               // 숨긴 것까지 (저장할 때)
+const todosOf = date => rawTodos(date).filter(t => !t.removed);   // 화면에 보이는 것
+const monthKey = (y, m) => `${y}-${pad(m + 1)}`;
+const spendOf = mk => (S.spend[mk]?.items || []).filter(x => !x.removed);
+const spentIn = mk => spendOf(mk).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+const allChat = () => Object.keys(S.chatDays).sort().flatMap(d => S.chatDays[d]?.messages || []);
 const xpOfTask = t => t.minutes || 30;
 const isFailed = (t, date) => t.kind === 'thanks' && !t.done && date < TODAY;
 const partOf = date => S.workout[date]?.part || S.split[parseKey(date).getDay()] || '휴식';
@@ -108,14 +121,14 @@ function saveFail() { toast('저장하지 못했어요. 잠시 후 다시 해 �
 
 async function putDay(date, todos) {
   if (!DB) { toast('기록을 저장할 수 없는 화면이에요'); throw new Error('저장소에 연결되지 않았어요'); }
-  if (todos === null) { delete S.days[date]; refresh(); return queue(`days/${date}`, () => DB.doc(`days/${date}`).delete()); }
+  if (todos === null) todos = [];
   S.days[date] = { date, todos };
   refresh();
   return queue(`days/${date}`, () => DB.doc(`days/${date}`).set({ date, todos }));
 }
 async function putWorkout(date, data) {
   if (!DB) throw new Error('저장소에 연결되지 않았어요');
-  if (data === null) { delete S.workout[date]; refresh(); return queue(`workout/${date}`, () => DB.doc(`workout/${date}`).delete()); }
+  if (data === null) data = { part: '', plan: '' };
   S.workout[date] = { date, ...data };
   refresh();
   return queue(`workout/${date}`, () => DB.doc(`workout/${date}`).set({ date, ...data }));
@@ -132,10 +145,46 @@ async function putMoney(money) {
   refresh();
   return queue('money/main', () => DB.doc('money/main').set(money));
 }
-async function putChat(messages) {
-  S.chat = messages.slice(-60);
+// 대화는 날짜마다 한 문서에 계속 쌓는다(지우지 않음)
+async function addChat(messages) {
+  const day = TODAY;
+  const list = [...(S.chatDays[day]?.messages || []), ...messages];
+  S.chatDays[day] = { date: day, messages: list };
   if (!DB) return;
-  return queue('chat/log', () => DB.doc('chat/log').set({ messages: S.chat })).catch(() => {});
+  return queue(`chatlog/${day}`, () => DB.doc(`chatlog/${day}`).set({ date: day, messages: S.chatDays[day].messages })).catch(saveFail);
+}
+
+// 바꾼 것은 모두 그날의 변경 기록에 한 줄씩 남긴다
+function logAct(text) {
+  if (!DB || !text) return;
+  const day = keyOf(new Date());
+  const entries = [...(S.logDays[day]?.entries || []), { at: new Date().toISOString(), text: String(text).slice(0, 600) }];
+  S.logDays[day] = { date: day, entries };
+  queue(`log/${day}`, () => DB.doc(`log/${day}`).set({ date: day, entries: S.logDays[day].entries })).catch(() => {});
+}
+
+// 지출: 달마다 한 문서
+async function putSpend(mk, items) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.spend[mk] = { month: mk, items };
+  refresh();
+  return queue(`spend/${mk}`, () => DB.doc(`spend/${mk}`).set({ month: mk, items }));
+}
+// 잔액이 바뀔 때마다 그 달 잔액 기록에 남긴다
+function addBalHist(bankId, amount) {
+  if (!DB) return;
+  const mk = monthKey(new Date().getFullYear(), new Date().getMonth());
+  const items = [...(S.balhist[mk]?.items || []), { at: new Date().toISOString(), bank: bankId, amount }];
+  S.balhist[mk] = { month: mk, items };
+  queue(`balhist/${mk}`, () => DB.doc(`balhist/${mk}`).set({ month: mk, items })).catch(() => {});
+}
+async function setBalance(bankId, amount) {
+  const money = clone(S.money);
+  money.balances[bankId] = amount;
+  await putMoney(money);
+  addBalHist(bankId, amount);
+  const b = BANKS.find(x => x.id === bankId);
+  logAct(`${b.name} 잔액 ${amount == null ? '지움' : won(amount)}`);
 }
 
 async function connect() {
@@ -180,13 +229,80 @@ async function connect() {
     S.money = money;
     refresh();
   }, () => {});
-  DB.doc('chat/log').onSnapshot(d => {
-    const msgs = d.data()?.messages || [];
-    if (same(msgs, S.chat)) return;
-    S.chat = msgs;
+  // 대화와 변경 기록은 이번 달 것만 계속 받고, 지난 달 것은 저장소에서 열 때 불러온다
+  const monthStart = `${monthKey(NOW.getFullYear(), NOW.getMonth())}-01`;
+  const recentStart = shiftKey(TODAY, -7) < monthStart ? shiftKey(TODAY, -7) : monthStart;
+  DB.collection('chatlog').where('date', '>=', recentStart).onSnapshot(snap => {
+    const o = { ...S.chatDays };
+    snap.docs.forEach(d => { o[d.id] = d.data(); });
+    if (same(o, S.chatDays)) return;
+    S.chatDays = o;
     if (!UI.pending && $mgr.classList.contains('open')) paintChat();
   }, () => {});
+  DB.collection('log').where('date', '>=', recentStart).onSnapshot(snap => {
+    const o = { ...S.logDays };
+    snap.docs.forEach(d => { o[d.id] = d.data(); });
+    if (same(o, S.logDays)) return;
+    S.logDays = o;
+    if (UI.view === 'archive') refresh();
+  }, () => {});
+  DB.collection('spend').onSnapshot(snap => {
+    const o = {};
+    snap.docs.forEach(d => { o[d.id] = d.data(); });
+    if (same(o, S.spend)) return;
+    S.spend = o;
+    refresh();
+  }, () => {});
+  DB.collection('balhist').onSnapshot(snap => {
+    const o = {};
+    snap.docs.forEach(d => { o[d.id] = d.data(); });
+    if (same(o, S.balhist)) return;
+    S.balhist = o;
+    refresh();
+  }, () => {});
+  migrateOldChat();
   if ($mgr.classList.contains('open')) paintChat();
+}
+
+// 예전 한 문서짜리 대화(chat/log)를 날짜별 대화 기록으로 옮긴다. 예전 문서는 그대로 둔다
+async function migrateOldChat() {
+  try {
+    const old = await DB.doc('chat/log').get();
+    const v = old.exists ? old.data() : null;
+    if (!v || v.migrated || !(v.messages || []).length) return;
+    const byDay = {};
+    for (const m of v.messages) {
+      const d = keyOf(new Date(String(m.at || '').replace(/u$/, '') || Date.now()));
+      (byDay[d] = byDay[d] || []).push(m);
+    }
+    for (const [d, msgs] of Object.entries(byDay)) {
+      const cur = (await DB.doc(`chatlog/${d}`).get()).data()?.messages || [];
+      const have = new Set(cur.map(m => m.at));
+      const key = m => [Date.parse(String(m.at || '').replace(/u$/, '')) || 0, m.role === 'user' ? 0 : 1];
+      const merged = [...msgs.filter(m => !have.has(m.at)), ...cur].sort((a, b) => { const x = key(a), y = key(b); return x[0] - y[0] || x[1] - y[1]; });
+      await queue(`chatlog/${d}`, () => DB.doc(`chatlog/${d}`).set({ date: d, messages: merged }));
+    }
+    await DB.doc('chat/log').set({ ...v, migrated: true });
+  } catch (e) { /* 다음에 열 때 다시 시도한다 */ }
+}
+
+// 지난 달 대화·변경 기록은 저장소에서 그 달을 열 때 한 번 읽는다
+async function loadMonthExtras(y, m) {
+  const mk = monthKey(y, m);
+  if (!DB || UI.extras[mk]) return;
+  UI.extras[mk] = { loading: true, chat: {}, log: {} };
+  const from = `${mk}-01`, to = `${mk}-31`;
+  try {
+    const [c, l] = await Promise.all([
+      DB.collection('chatlog').where('date', '>=', from).where('date', '<=', to).get(),
+      DB.collection('log').where('date', '>=', from).where('date', '<=', to).get(),
+    ]);
+    const chat = {}, log = {};
+    c.docs.forEach(d => { chat[d.id] = d.data(); });
+    l.docs.forEach(d => { log[d.id] = d.data(); });
+    UI.extras[mk] = { chat, log };
+  } catch (e) { UI.extras[mk] = { error: true, chat: {}, log: {} }; }
+  if (UI.view === 'archive') refresh();
 }
 
 /* ---------- 조각 ---------- */
@@ -345,9 +461,36 @@ function viewArchive() {
   const st = monthStats(y, m);
   const prefix = `${y}-${pad(m + 1)}-`;
   const dates = Object.keys(S.days).filter(d => d.startsWith(prefix) && todosOf(d).length).sort().reverse();
+  const mk = monthKey(y, m);
   const stats = [`<span class="chip soft num">기록 ${st.count}일</span>`];
   if (st.total) stats.push(`<span class="chip soft num">할 일 ${st.done}/${st.total}</span>`);
   stats.push(`<span class="chip num">+${st.xp} XP</span>`);
+  const spent = spentIn(mk), nSpend = spendOf(mk).length;
+  stats.push(`<button class="chip soft num" data-money-month="${mk}">쓴 돈 ${won(spent)}${nSpend ? ` · ${nSpend}건` : ''}</button>`);
+
+  // 이번 달·지난 달 대화와 변경 기록: 이번 주 것은 이미 받아 두었고, 나머지는 열 때 불러온다
+  if (ready() && mk < TODAY.slice(0, 7)) loadMonthExtras(y, m);
+  const ex = UI.extras[mk];
+  const pick = (live, loaded) => {
+    const o = {};
+    for (const [d, v] of Object.entries(loaded || {})) if (d.startsWith(mk)) o[d] = v;
+    for (const [d, v] of Object.entries(live)) if (d.startsWith(mk)) o[d] = v;
+    return o;
+  };
+  const chatM = pick(S.chatDays, ex?.chat), logM = pick(S.logDays, ex?.log);
+  const time = iso => { const t = new Date(String(iso).replace(/u$/, '')); return isNaN(t) ? '' : `${pad(t.getHours())}:${pad(t.getMinutes())}`; };
+  const histHTML = (obj, kind) => {
+    const days = Object.keys(obj).sort().reverse().filter(d => (kind === 'chat' ? obj[d].messages : obj[d].entries)?.length);
+    if (ex?.loading && !days.length) return '<p class="empty">불러오는 중…</p>';
+    if (!days.length) return '<p class="empty">이 달에는 없어요</p>';
+    return days.map(d => {
+      const rows = kind === 'chat' ? obj[d].messages : obj[d].entries;
+      return `<details class="hist"><summary><b class="disp">${dotDate(d)}</b><span>${dowOf(d)}</span><span class="cnt num">${rows.length}${kind === 'chat' ? '개' : '건'}</span></summary>
+        <ul>${rows.map(r => kind === 'chat'
+          ? `<li class="${r.role === 'user' ? 'me' : ''}"><span class="tm num">${time(r.at)}</span><span class="who">${r.role === 'user' ? '나' : '매니저'}</span><span class="tx">${esc(r.content)}</span></li>`
+          : `<li><span class="tm num">${time(r.at)}</span><span class="tx">${esc(r.text)}</span></li>`).join('')}</ul></details>`;
+    }).join('');
+  };
 
   const logs = !ready() ? statusPanel(3)
     : !dates.length ? '<div class="panel anim" style="--i:3"><p class="empty">이 달에는 기록이 없어요</p></div>'
@@ -388,8 +531,16 @@ function viewArchive() {
         <div class="legend"><span><i class="l-part"></i>조금</span><span><i class="l-full"></i>전부</span><span><i class="l-plan"></i>예정</span></div>
       </section>
       <div class="log">
-        <div class="sec anim" style="--i:2"><h2>기록</h2></div>
+        <div class="sec anim" style="--i:2"><h2>할 일 기록</h2></div>
         ${logs}
+        <div class="sec anim" style="--i:4"><h2>대화 기록</h2></div>
+        <section class="panel anim hist-box" style="--i:5">${ready() ? histHTML(chatM, 'chat') : '<p class="empty">불러오는 중…</p>'}</section>
+        <div class="sec anim" style="--i:6"><h2>바꾼 기록</h2></div>
+        <section class="panel anim hist-box" style="--i:7">${ready() ? histHTML(logM, 'log') : '<p class="empty">불러오는 중…</p>'}</section>
+        <section class="panel anim backup" style="--i:8">
+          <div><b>전체 기록 내려받기</b><small>할 일, 감사한 점, 운동, 돈, 대화, 바꾼 기록 전부를 한 파일로</small></div>
+          <button class="btn ghost" data-backup>내려받기</button>
+        </section>
       </div>
     </div>`;
 }
@@ -434,6 +585,7 @@ function viewMoney() {
           </div>
         </div>
       </section>
+      ${spendHTML(4)}
       <section class="panel anim wide" style="--i:3">
         <div class="sh-sec">
           <div class="total"><span class="eyebrow">통장 잔액${known.length < BANKS.length ? ` · ${known.length}/${BANKS.length}개 입력` : ''}</span><b class="num">${known.length ? won(sum) : '–'}</b></div>
@@ -445,9 +597,123 @@ function viewMoney() {
               <span class="bal num${v == null ? ' none' : ''}">${v == null ? '아직 없음' : won(v)}</span>
             </button>`;
           }).join('')}</div>
+          ${balHistHTML()}
         </div>
       </section>
     </div>`;
+}
+
+const bankName = id => (id === 'cash' ? '현금' : BANKS.find(b => b.id === id)?.name || '');
+
+function spendHTML(i) {
+  const mk = monthKey(UI.my, UI.mm), items = spendOf(mk);
+  const total = spentIn(mk), budget = S.money.spend || 0;
+  const left = budget - total, pct = budget ? Math.min(100, Math.round((total / budget) * 100)) : 0;
+  const isNow = mk === TODAY.slice(0, 7);
+  const byDay = {};
+  items.forEach(x => (byDay[x.date] = byDay[x.date] || []).push(x));
+  const days = Object.keys(byDay).sort().reverse();
+  return `<section class="panel anim wide spend" style="--i:${i}">
+    <div class="map-head" style="margin:0">${monthNav(UI.my, UI.mm, 'money')}${isNow ? '<button class="chip" data-add-expense>+ 지출 기록</button>' : ''}</div>
+    <div class="spend-top">
+      <div><span class="eyebrow">${UI.mm + 1}월에 쓴 돈</span><div class="spent num">${won(total)}</div></div>
+      <div class="left num ${left < 0 ? 'over' : ''}">${budget ? (left >= 0 ? `${won(left)} 남음` : `${won(-left)} 넘음`) : ''}<small>${budget ? `${manwon(budget)} 중` : ''}</small></div>
+    </div>
+    <div class="cycle spendbar ${left < 0 ? 'over' : ''}" role="img" aria-label="쓸 돈의 ${pct}% 사용"><i style="width:${pct}%"></i></div>
+    ${days.length ? `<div class="exp-days">${days.map(d => `
+      <div class="exp-day"><div class="exp-date"><b class="disp">${dotDate(d)}</b><span>${dowOf(d)}</span><span class="num">${won(byDay[d].reduce((s, x) => s + x.amount, 0))}</span></div>
+        ${byDay[d].map(x => `<button class="exp" data-exp="${mk}|${esc(x.id)}"><span class="t">${esc(x.title)}</span>${x.bank ? `<span class="chip soft">${bankName(x.bank)}</span>` : ''}<span class="a num">${won(x.amount)}</span></button>`).join('')}
+      </div>`).join('')}</div>` : `<p class="empty">${isNow ? '아직 기록한 지출이 없어요' : '이 달에는 지출 기록이 없어요'}</p>`}
+  </section>`;
+}
+
+function balHistHTML() {
+  const mk = monthKey(UI.my, UI.mm), items = (S.balhist[mk]?.items || []).slice().reverse();
+  if (!items.length) return '';
+  return `<details class="hist"><summary><b>${UI.mm + 1}월 잔액 기록</b><span class="cnt num">${items.length}건</span></summary>
+    <ul>${items.map(x => { const t = new Date(x.at); return `<li><span class="tm num">${pad(t.getMonth() + 1)}.${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}</span><span class="tx">${bankName(x.bank)} ${x.amount == null ? '지움' : won(x.amount)}</span></li>`; }).join('')}</ul></details>`;
+}
+
+function expenseSheet(mk, id) {
+  const cur = id ? (S.spend[mk]?.items || []).find(x => x.id === id) : null;
+  const banks = [...BANKS.map(b => ({ id: b.id, name: b.name })), { id: 'cash', name: '현금' }];
+  let bank = cur?.bank || '';
+  openSheet(`<div class="sh-head" style="--c:var(--lime)"><span class="q-icon"><span class="emoji" aria-hidden="true">💸</span></span>
+      <div><h3>${cur ? '지출 고치기' : '지출 기록'}</h3><p>${cur ? `${dotDate(cur.date)} 기록` : '쓴 돈을 남겨 두면 달마다 모여요'}</p></div></div>
+    <div class="sh-sec"><span class="label">금액</span><div class="numfield"><input class="field" id="exAmt" inputmode="numeric" placeholder="0" value="${cur ? cur.amount : ''}"><span>원</span></div></div>
+    <div class="sh-sec"><span class="label">내용</span><input class="field" id="exTitle" maxlength="40" placeholder="예: PX 간식" value="${esc(cur?.title || '')}"></div>
+    <div class="sh-sec"><span class="label">날짜</span><input class="field" id="exDate" type="date" value="${cur?.date || TODAY}" max="${TODAY}"></div>
+    <div class="sh-sec"><span class="label">어디서 냈는지</span><div class="parts" id="exBank">${banks.map(b => `<button class="pchip" data-b="${b.id}" aria-pressed="${b.id === bank}">${b.name}</button>`).join('')}</div></div>
+    <div class="${cur ? 'btn-row' : ''}">${cur ? '<button class="btn ghost" id="exDel">기록에서 숨기기</button>' : ''}<button class="btn" id="exSave">저장</button></div>`, body => {
+    const amt = body.querySelector('#exAmt');
+    amt.addEventListener('input', () => { amt.value = amt.value.replace(/[^\d]/g, ''); });
+    body.querySelector('#exBank').addEventListener('click', e => {
+      const b = e.target.closest('[data-b]');
+      if (!b) return;
+      bank = bank === b.dataset.b ? '' : b.dataset.b;
+      body.querySelectorAll('#exBank [data-b]').forEach(x => x.setAttribute('aria-pressed', x.dataset.b === bank));
+    });
+    body.querySelector('#exDel')?.addEventListener('click', async () => {
+      const items = clone(S.spend[mk].items);
+      Object.assign(items.find(x => x.id === id), { removed: true, removedAt: new Date().toISOString() });
+      try { await putSpend(mk, items); logAct(`지출 숨김 · ${cur.title} ${won(cur.amount)} (${dotDate(cur.date)})`); toast('기록에서 숨겼어요'); closeSheet(); } catch (e) { saveFail(); }
+    });
+    body.querySelector('#exSave').addEventListener('click', async () => {
+      const amount = Number(amt.value), title = body.querySelector('#exTitle').value.trim() || '지출';
+      const date = isDate(body.querySelector('#exDate').value) ? body.querySelector('#exDate').value : TODAY;
+      if (!(amount > 0)) { toast('금액을 넣어 주세요'); amt.focus(); return; }
+      const nk = date.slice(0, 7);
+      try {
+        if (cur) {
+          // 고치면 예전 값은 기록에 남겨 두고 새 값으로 바꾼다
+          const items = clone(S.spend[mk].items), x = items.find(i => i.id === id);
+          const prev = { amount: x.amount, title: x.title, date: x.date, bank: x.bank, at: x.editedAt || x.at };
+          if (nk === mk) {
+            Object.assign(x, { amount, title, date, editedAt: new Date().toISOString(), history: [...(x.history || []), prev] });
+            if (bank) x.bank = bank; else delete x.bank;
+            await putSpend(mk, items);
+          } else {
+            Object.assign(x, { removed: true, removedAt: new Date().toISOString(), movedTo: nk });
+            await putSpend(mk, items);
+            const moved = { id: newId(), date, amount, title, at: new Date().toISOString(), history: [prev] };
+            if (bank) moved.bank = bank;
+            await putSpend(nk, [...clone(S.spend[nk]?.items || []), moved]);
+          }
+          logAct(`지출 고침 · ${prev.title} ${won(prev.amount)} → ${title} ${won(amount)} (${dotDate(date)})`);
+        } else {
+          const item = { id: newId(), date, amount, title, at: new Date().toISOString() };
+          if (bank) item.bank = bank;
+          await putSpend(nk, [...clone(S.spend[nk]?.items || []), item]);
+          logAct(`지출 · ${dotDate(date)} ${title} ${won(amount)}${bank ? ` (${bankName(bank)})` : ''}`);
+        }
+        toast('지출을 기록했어요');
+        closeSheet();
+      } catch (e) { saveFail(); }
+    });
+  });
+}
+
+// 저장소의 모든 기록을 한 JSON 파일로
+async function backup(btn) {
+  const c = window.claude;
+  const dl = c?.use ? await c.use('downloads').catch(() => null) : null;
+  if (!dl || !DB) { toast('이 화면에서는 내려받을 수 없어요'); return; }
+  btn.disabled = true;
+  btn.textContent = '모으는 중…';
+  try {
+    const out = { app: '일상 매니저', exportedAt: new Date().toISOString() };
+    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'balhist', 'chatlog', 'log', 'chat']) {
+      const snap = await DB.collection(col).get();
+      out[col] = Object.fromEntries(snap.docs.map(d => [d.id, d.data()]));
+    }
+    await dl.save({ filename: `일상매니저-백업-${TODAY}.json`, data: JSON.stringify(out, null, 2) });
+    toast('백업 파일을 저장했어요');
+  } catch (e) {
+    if (e?.code !== 'declined') toast('내려받지 못했어요. 잠시 후 다시 해 주세요.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '내려받기';
+  }
 }
 
 function viewFixed() {
@@ -489,7 +755,7 @@ function msgHTML(m, fresh) {
 }
 
 function chatHTML() {
-  const list = S.chat.slice(-40);
+  const list = allChat().slice(-40);
   let html = '';
   if (UI.sample === false) {
     html += '<p class="empty">이 화면에서는 매니저를 부를 수 없어요. claude.ai에서 열어 주세요.</p>';
@@ -642,7 +908,7 @@ function celebrate(el, xp) {
 
 /* ---------- 할 일 바꾸기 ---------- */
 async function setTodo(date, id, patch) {
-  const todos = clone(todosOf(date));
+  const todos = clone(rawTodos(date));
   const t = todos.find(x => x.id === id);
   if (!t) return;
   Object.assign(t, patch);
@@ -659,6 +925,7 @@ async function toggleDone(card) {
   const done = !t.done;
   if (done) celebrate(card.querySelector('.q-check') || card, xpOfTask(t));
   const saving = setTodo(date, id, { done });
+  logAct(`${done ? '체크' : '체크 해제'} · ${dotDate(date)} ${t.title}`);
   if (done) requestAnimationFrame(() => requestAnimationFrame(() =>
     $view.querySelector(`.qcard[data-id="${CSS.escape(id)}"][data-date="${date}"]`)?.classList.add('just')));
   try { await saving; } catch (e) { saveFail(); }
@@ -721,6 +988,7 @@ function thanksSheet(date, t, i) {
       try {
         if (done && !was) celebrate(e.currentTarget, xpOfTask(t));
         await setTodo(date, t.id, { items: vals, done });
+        logAct(`감사한 점 · ${dotDate(date)}\n${vals.map((v, n) => `${n + 1}. ${v || '(빈칸)'}`).join('\n')}`);
         toast(done ? '감사한 점을 다 적었어요' : `${vals.filter(Boolean).length}/3 저장했어요`);
         closeSheet();
       } catch (err) { saveFail(); }
@@ -746,7 +1014,9 @@ function devSheet(date, t, i) {
     });
     body.querySelector('#devSave').addEventListener('click', async () => {
       try {
-        await setTodo(date, t.id, { note: body.querySelector('#devNote').value.trim(), done });
+        const note = body.querySelector('#devNote').value.trim();
+        await setTodo(date, t.id, { note, done });
+        logAct(`사이트 개발 · ${dotDate(date)}${done !== !!t.done ? (done ? ' 완료' : ' 완료 취소') : ''}${note ? `\n${note}` : ''}`);
         toast('저장했어요');
         closeSheet();
       } catch (e) { saveFail(); }
@@ -793,10 +1063,14 @@ function workoutSheet(date, t, i) {
     });
     body.querySelector('#woSave').addEventListener('click', async () => {
       try {
+        const planA = body.querySelector('#planA').value.trim(), planB = body.querySelector('#planB')?.value.trim() || '';
         if (splitChanged) await putSplit(split);
-        await putWorkout(date, { part: pick.a, plan: body.querySelector('#planA').value.trim() });
-        if (showTomorrow) await putWorkout(tk, { part: pick.b, plan: body.querySelector('#planB').value.trim() });
+        await putWorkout(date, { part: pick.a, plan: planA });
+        if (showTomorrow) await putWorkout(tk, { part: pick.b, plan: planB });
         if (done !== !!t.done) await setTodo(date, t.id, { done });
+        logAct([`운동 · ${dotDate(date)} ${pick.a}${done !== !!t.done ? (done ? ' 완료' : ' 완료 취소') : ''}${planA ? `: ${planA}` : ''}`,
+          showTomorrow ? `다음 날 ${dotDate(tk)} ${pick.b}${planB ? `: ${planB}` : ''}` : '',
+          splitChanged ? `주간 루틴 ${[1, 2, 3, 4, 5, 6, 0].map(d => `${DAY[d]} ${split[d]}`).join(', ')}` : ''].filter(Boolean).join('\n'));
         toast('운동 루틴을 저장했어요');
         closeSheet();
       } catch (e) { saveFail(); }
@@ -814,9 +1088,7 @@ function balanceSheet(bankId) {
     input.addEventListener('input', () => { input.value = input.value.replace(/[^\d]/g, ''); });
     body.querySelector('#balSave').addEventListener('click', async () => {
       const raw = input.value.trim();
-      const money = clone(S.money);
-      money.balances[bankId] = raw === '' ? null : Number(raw);
-      try { await putMoney(money); toast(`${b.name} 잔액을 저장했어요`); closeSheet(); } catch (e) { saveFail(); }
+      try { await setBalance(bankId, raw === '' ? null : Number(raw)); toast(`${b.name} 잔액을 저장했어요`); closeSheet(); } catch (e) { saveFail(); }
     });
   });
 }
@@ -826,8 +1098,8 @@ $view.addEventListener('click', e => {
   if (e.target.closest('[data-chat]')) { openChat(); return; }
   const shift = e.target.closest('[data-shift]');
   if (shift) {
-    const n = +shift.dataset.shift, home = shift.dataset.scope === 'home';
-    const [ky, km] = home ? ['y', 'm'] : ['ay', 'am'];
+    const n = +shift.dataset.shift, scope = shift.dataset.scope, home = scope === 'home';
+    const [ky, km] = home ? ['y', 'm'] : scope === 'money' ? ['my', 'mm'] : ['ay', 'am'];
     UI[km] += n;
     if (UI[km] < 0) { UI[km] = 11; UI[ky]--; }
     if (UI[km] > 11) { UI[km] = 0; UI[ky]++; }
@@ -859,6 +1131,13 @@ $view.addEventListener('click', e => {
   }
   const acct = e.target.closest('[data-acct]');
   if (acct) { balanceSheet(acct.dataset.acct); return; }
+  if (e.target.closest('[data-add-expense]')) { expenseSheet(TODAY.slice(0, 7), null); return; }
+  const exp = e.target.closest('[data-exp]');
+  if (exp) { const [mk, id] = exp.dataset.exp.split('|'); expenseSheet(mk, id); return; }
+  const mm = e.target.closest('[data-money-month]');
+  if (mm) { const [y, m] = mm.dataset.moneyMonth.split('-').map(Number); UI.my = y; UI.mm = m - 1; location.hash = '#money'; return; }
+  const bk = e.target.closest('[data-backup]');
+  if (bk) { backup(bk); return; }
 });
 $view.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('qcard')) { e.preventDefault(); e.target.click(); }
@@ -878,12 +1157,15 @@ function instructions() {
   const hm = `${pad(NOW.getHours())}:${pad(NOW.getMinutes())}`;
   const split = [1, 2, 3, 4, 5, 6, 0].map(d => `${DAY[d]} ${S.split[d]}`).join(', ');
   const bal = BANKS.map(b => `${b.name} ${S.money.balances[b.id] == null ? '미입력' : won(S.money.balances[b.id])}`).join(', ');
+  const mk = TODAY.slice(0, 7);
+  const recentSpend = spendOf(mk).slice(-8).map(x => ({ id: x.id, date: x.date, title: x.title, amount: x.amount }));
   return `너는 '일상 매니저' 앱 안에 있는 매니저야. 사용자가 넣으라는 곳에 기록을 넣고 고치는 일만 해.
 규칙:
 - 한국어로 짧고 친근하게 답해. 무엇을 어디에 넣었는지 한 줄로 알려줘.
 - 기록을 바꿀 때는 반드시 도구를 써. 도구가 성공하지 않았으면 했다고 말하지 마.
 - 사용자가 말하지 않은 내용을 지어내지 마. 날짜나 양이 애매하면 넣기 전에 물어봐.
 - '오늘', '내일', '토요일' 같은 말은 아래 날짜를 기준으로 YYYY-MM-DD로 바꿔.
+- 돈을 썼다고 하면 add_expense로 날짜·금액·내용을 기록해. 통장을 말하면 bank에 넣어.
 - 시간이 걸리는 할 일은 minutes(분)에, 개수 같은 양은 amount에 넣어. 사이트 개발은 kind "dev", 운동은 kind "workout", 감사한 점 3개는 kind "thanks".
 - 감사한 점은 그날 자정 전까지만 적을 수 있고, 지나면 탈락이야.
 - 앱 화면이나 기능을 고치는 일은 네 일이 아니야. 그런 요청이면 코딩은 대화 밖 개발 세션에서 한다고 알려줘.
@@ -893,7 +1175,9 @@ function instructions() {
 내일(${tk}) 할 일: ${JSON.stringify(todosOf(tk).map(slim))}
 오늘 운동 부위: ${partOf(TODAY)}, 내일 운동 부위: ${partOf(tk)}
 주간 운동 루틴: ${split}
-돈: 월급날 매달 ${S.money.payday}일, 적금 ${manwon(S.money.savings)} 자동이체, 한 달 쓸 수 있는 돈 ${manwon(S.money.spend)}, 잔액 ${bal}`;
+돈: 월급날 매달 ${S.money.payday}일, 적금 ${manwon(S.money.savings)} 자동이체, 한 달 쓸 수 있는 돈 ${manwon(S.money.spend)}, 잔액 ${bal}
+이번 달(${mk}) 쓴 돈 합계 ${won(spentIn(mk))}, 최근 지출: ${JSON.stringify(recentSpend)}
+지출을 말하면 add_expense로 기록해. 기록은 지우지 않고 숨기기만 해.`;
 }
 
 function makeTools(before, acts) {
@@ -934,7 +1218,7 @@ function makeTools(before, acts) {
         if (input.note) t.note = String(input.note).slice(0, 600);
         if (kind === 'thanks') t.items = [];
         keep(dayPath(d), S.days[d]?.todos);
-        await putDay(d, [...clone(todosOf(d)), t]);
+        await putDay(d, [...clone(rawTodos(d)), t]);
         acts.push(`${dayNote(d)} 할 일 추가: ${title}`);
         return { ok: true, id: t.id };
       },
@@ -960,7 +1244,7 @@ function makeTools(before, acts) {
         if (input.note != null) patch.note = String(input.note).slice(0, 600);
         if (input.emoji) patch.emoji = String(input.emoji).slice(0, 8);
         keep(dayPath(d), S.days[d]?.todos);
-        const todos = clone(todosOf(d));
+        const todos = clone(rawTodos(d));
         const target = todos.find(x => x.id === t.id);
         Object.assign(target, patch);
         for (const k of Object.keys(target)) if (target[k] === undefined) delete target[k];
@@ -976,8 +1260,10 @@ function makeTools(before, acts) {
       execute: async input => {
         const d = needDate(input.date), t = findTodo(d, input.id);
         keep(dayPath(d), S.days[d]?.todos);
-        const left = todosOf(d).filter(x => x.id !== t.id);
-        await putDay(d, left.length ? clone(left) : null);
+        // 지우지 않고 숨긴다: 기록은 남는다
+        const todos = clone(rawTodos(d));
+        Object.assign(todos.find(x => x.id === t.id), { removed: true, removedAt: new Date().toISOString() });
+        await putDay(d, todos);
         acts.push(`${dayNote(d)} 할 일 삭제: ${t.title}`);
         return { ok: true };
       },
@@ -991,8 +1277,8 @@ function makeTools(before, acts) {
         if (d !== keyOf(new Date())) throw new Error('감사한 점은 그날(오늘)에만 적을 수 있어요');
         const items = [0, 1, 2].map(n => String((input.items || [])[n] || '').trim().slice(0, 140));
         keep(dayPath(d), S.days[d]?.todos);
-        let todos = clone(todosOf(d));
-        let t = todos.find(x => x.kind === 'thanks');
+        let todos = clone(rawTodos(d));
+        let t = todos.find(x => x.kind === 'thanks' && !x.removed);
         if (!t) { t = { id: newId(), emoji: '💌', title: '감사한 점 적기', amount: '3개', kind: 'thanks', done: false }; todos.push(t); }
         t.items = items;
         t.done = items.every(Boolean);
@@ -1040,10 +1326,44 @@ function makeTools(before, acts) {
         const amt = Math.round(Number(input.amount));
         if (!Number.isFinite(amt)) throw new Error('amount는 원 단위 숫자예요');
         keep('money/main', S.money);
-        const money = clone(S.money);
-        money.balances[b.id] = amt;
-        await putMoney(money);
+        await setBalance(b.id, amt);
         acts.push(`${b.name} 잔액 ${won(amt)}`);
+        return { ok: true };
+      },
+    },
+    {
+      name: 'add_expense',
+      description: 'Records money the user spent: date (YYYY-MM-DD), amount in won, title (what it was for), optional bank (농협, 카카오뱅크, 신한 or 현금). Returns the id.',
+      inputSchema: { type: 'object', properties: {
+        date: { type: 'string' }, amount: { type: 'number' }, title: { type: 'string' }, bank: { type: 'string', enum: [...BANKS.map(b => b.name), '현금'] },
+      }, required: ['date', 'amount', 'title'] },
+      execute: async input => {
+        const d = needDate(input.date), amt = Math.round(Number(input.amount));
+        if (!(amt > 0)) throw new Error('amount는 0보다 큰 원 단위 숫자예요');
+        const title = String(input.title || '').trim().slice(0, 40) || '지출';
+        const bank = BANKS.find(x => x.name === input.bank || x.id === input.bank)?.id || (input.bank === '현금' ? 'cash' : undefined);
+        const mk = d.slice(0, 7);
+        keep(`spend/${mk}`, S.spend[mk]?.items);
+        const item = { id: newId(), date: d, amount: amt, title, at: new Date().toISOString() };
+        if (bank) item.bank = bank;
+        await putSpend(mk, [...clone(S.spend[mk]?.items || []), item]);
+        acts.push(`${dotDate(d)} 지출 ${title} ${won(amt)}`);
+        return { ok: true, id: item.id, monthTotal: spentIn(mk) };
+      },
+    },
+    {
+      name: 'remove_expense',
+      description: 'Hides a wrongly entered expense by id (it stays in the history as removed). Only when the user clearly asks.',
+      inputSchema: { type: 'object', properties: { month: { type: 'string', description: 'YYYY-MM' }, id: { type: 'string' } }, required: ['month', 'id'] },
+      execute: async input => {
+        const mk = String(input.month || '').slice(0, 7);
+        const items = clone(S.spend[mk]?.items || []);
+        const x = items.find(i => i.id === String(input.id) && !i.removed);
+        if (!x) throw new Error(`${mk}에 id ${input.id} 지출이 없어요`);
+        keep(`spend/${mk}`, S.spend[mk]?.items);
+        Object.assign(x, { removed: true, removedAt: new Date().toISOString() });
+        await putSpend(mk, items);
+        acts.push(`지출 지움: ${x.title} ${won(x.amount)}`);
         return { ok: true };
       },
     },
@@ -1071,12 +1391,14 @@ async function undoTurn(at) {
   try {
     for (const [path, val] of Object.entries(before)) {
       const [col, id] = path.split('/');
-      if (col === 'days') await putDay(id, val && val.length ? val : null);
+      if (col === 'days') await putDay(id, val || []);
       else if (col === 'workout') await putWorkout(id, val ? { part: val.part, plan: val.plan || '' } : null);
       else if (col === 'settings') await putSplit(val.split);
       else if (col === 'money') await putMoney(val);
+      else if (col === 'spend') await putSpend(id, val || []);
     }
     delete UI.undo[at];
+    logAct('매니저가 한 일을 되돌림');
     toast('되돌렸어요');
     paintChat();
   } catch (e) { saveFail(); }
@@ -1112,7 +1434,7 @@ async function send() {
   UI.ctl = new AbortController();
   setBusy(true);
   paintChat();
-  const history = S.chat.slice(-12).map(m => ({ role: m.role, content: m.content }));
+  const history = allChat().slice(-12).map(m => ({ role: m.role, content: m.content }));
   const turns = [{ role: 'user', content: instructions() }, ...history, { role: 'user', content: text }];
   let answer = '', failed = '';
   try {
@@ -1138,11 +1460,12 @@ async function send() {
   const at = new Date().toISOString();
   const reply = [answer.trim(), failed].filter(Boolean).join('\n');
   if (Object.keys(before).length) UI.undo[at] = before;
-  const messages = [...S.chat, { role: 'user', content: text, at: `${at}u` }, { role: 'assistant', content: reply || '…', at, actions: acts }];
+  const messages = [{ role: 'user', content: text, at: `${at}u` }, { role: 'assistant', content: reply || '…', at, actions: acts }];
+  if (acts.length) logAct(`매니저 · ${acts.join(' / ')}`);
   UI.pending = null;
   UI.ctl = null;
   setBusy(false);
-  await putChat(messages);
+  await addChat(messages);
   paintChat();
   $input.focus({ preventScroll: true });
 }
