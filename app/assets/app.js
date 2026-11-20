@@ -312,6 +312,7 @@ const ICON = {
   prev: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   next: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   star: '<svg class="spark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>',
+  pen: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM14 6l4 4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   starPlain: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>',
 };
 const starSVG = (cls, style = '') => `<svg class="${cls}" style="${style}" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>`;
@@ -346,10 +347,12 @@ function cardHTML(t, i, date, n) {
   const note = t.kind === 'dev' ? t.note : t.kind === 'workout' ? S.workout[date]?.plan : '';
   if (note) meta.push(`<span class="q-note">${esc(note)}</span>`);
   const lockCheck = future || failed || t.kind === 'thanks';
-  return `<li class="${cls}" style="--c:${PAL[i % PAL.length]}; --i:${n}" data-date="${date}" data-id="${esc(t.id)}" tabindex="0">
+  const editing = UI.edit === date;
+  return `<li class="${cls}${editing ? ' editing' : ''}" style="--c:${PAL[i % PAL.length]}; --i:${n}" data-date="${date}" data-id="${esc(t.id)}" tabindex="0">
     <div class="qc-top">
       <span class="q-icon"><span class="emoji" aria-hidden="true">${esc(t.emoji || '📌')}</span></span>
-      <button class="q-check" data-check ${lockCheck ? 'disabled' : ''} aria-pressed="${!!t.done}" aria-label="${esc(t.title)} ${t.done ? '완료 취소' : '완료'}">${failed ? ICON.cross : ICON.check}</button>
+      ${editing ? `<span class="q-check q-pen" aria-hidden="true">${ICON.pen}</span>`
+        : `<button class="q-check" data-check ${lockCheck ? 'disabled' : ''} aria-pressed="${!!t.done}" aria-label="${esc(t.title)} ${t.done ? '완료 취소' : '완료'}">${failed ? ICON.cross : ICON.check}</button>`}
     </div>
     <b class="qc-title">${esc(t.title)}</b>
     <div class="qc-meta">${meta.join('')}</div>
@@ -410,28 +413,41 @@ function heroHTML(date, i) {
   </div>`;
 }
 
+// 할 일 줄: 시간 막대 + 고치기 버튼 + 카드들 + 맨 끝 '할 일 추가' 카드
+function listHTML(date, i0) {
+  const todos = todosOf(date), editing = UI.edit === date;
+  const copyFrom = date > TODAY && todosOf(TODAY).length && date !== TODAY ? TODAY : null;
+  if (!todos.length) {
+    return `<div class="panel empty-day anim" style="--i:${i0}">
+      <p class="empty">${date > TODAY ? '아직 정한 할 일이 없어요' : '등록된 할 일이 없어요'}</p>
+      <div class="btn-col">
+        <button class="btn" data-add="${date}">+ 할 일 추가</button>
+        ${copyFrom ? `<button class="btn ghost" data-copy="${copyFrom}>${date}">오늘 목록 그대로 가져오기</button>` : ''}
+      </div></div>`;
+  }
+  return `<div class="qtools anim" style="--i:${i0}">${timeBarHTML(todos) || '<span></span>'}
+      <button class="chip ${editing ? '' : 'soft'} sec-btn" data-edit-toggle="${date}">${editing ? '다 고쳤어요' : '고치기'}</button></div>
+    <ul class="qrow" aria-label="${dotDate(date)} 할 일">${todos.map((t, i) => cardHTML(t, i, date, i0 + 1 + i)).join('')}
+      <li class="qadd anim" style="--i:${i0 + 1 + todos.length}"><button data-add="${date}" aria-label="${dotDate(date)} 할 일 추가"><span class="plus" aria-hidden="true">+</span><b>할 일 추가</b></button></li>
+    </ul>`;
+}
+
 function dayAreaHTML() {
   if (!ready()) return heroHTML(UI.sel, 0) + statusPanel(1);
   const date = UI.sel, todos = todosOf(date);
   let html = heroHTML(date, 0);
-  if (!todos.length) {
-    html += `<div class="panel anim" style="--i:1"><p class="empty">등록된 할 일이 없어요</p>
-      <button class="btn ghost" data-chat style="margin-top:8px">매니저에게 말하기</button></div>`;
-  } else {
-    if (rateOf(date) === 100 && date <= TODAY) {
-      html += `<div class="panel allclear anim" style="--i:1">
-        ${starSVG('s', 'left:12%;top:22%')}${starSVG('s', 'right:14%;top:16%;animation-delay:.6s')}${starSVG('s', 'right:26%;bottom:18%;width:10px;height:10px;animation-delay:1.1s')}
-        <b>ALL CLEAR</b></div>`;
-    }
-    html += `<div class="anim" style="--i:2">${timeBarHTML(todos)}</div>`;
-    html += `<ul class="qrow" aria-label="할 일">${todos.map((t, i) => cardHTML(t, i, date, 3 + i)).join('')}</ul>`;
+  if (todos.length && rateOf(date) === 100 && date <= TODAY) {
+    html += `<div class="panel allclear anim" style="--i:1">
+      ${starSVG('s', 'left:12%;top:22%')}${starSVG('s', 'right:14%;top:16%;animation-delay:.6s')}${starSVG('s', 'right:26%;bottom:18%;width:10px;height:10px;animation-delay:1.1s')}
+      <b>ALL CLEAR</b></div>`;
   }
-  const tk = shiftKey(date, 1), tmr = todosOf(tk);
-  if (date === TODAY && tmr.length) {
+  html += listHTML(date, 2);
+  // 오늘을 보고 있으면 내일 목록을 늘 같이 보여 준다: 폰이 없는 날을 위해 오늘 미리 정해 둔다
+  if (date === TODAY) {
+    const tk = shiftKey(date, 1), tmr = todosOf(tk);
     const total = tmr.reduce((s, t) => s + (t.minutes || 0), 0);
-    html += `<div class="sec anim" style="--i:5"><h2>내일 할 일</h2><span class="num">${dotDate(tk)} ${dowOf(tk)}${total ? ` · 계획 ${fmtMin(total)}` : ''}</span></div>
-      <div class="anim" style="--i:6">${timeBarHTML(tmr)}</div>
-      <ul class="qrow" aria-label="내일 할 일">${tmr.map((t, i) => cardHTML(t, i, tk, 7 + i)).join('')}</ul>`;
+    html += `<div class="sec anim" style="--i:6"><h2>내일 할 일</h2><span class="num">${dotDate(tk)} ${dowOf(tk)}${total ? ` · 계획 ${fmtMin(total)}` : ''}</span></div>
+      ${listHTML(tk, 7)}`;
   }
   return html;
 }
@@ -1005,7 +1021,9 @@ function devSheet(date, t, i) {
   openSheet(`${sheetHead(t, date, i)}
     <div class="sh-sec"><span class="label">무엇을 할지</span>
       <textarea class="area" id="devNote" maxlength="600" placeholder="예: 저장소 화면에 월별 그래프 넣기">${esc(t.note || '')}</textarea></div>
-    <div class="${date > TODAY ? '' : 'btn-row'}">${doneButton(date, t)}<button class="btn" id="devSave">저장</button></div>`, body => {
+    <div class="${date > TODAY ? '' : 'btn-row'}">${doneButton(date, t)}<button class="btn" id="devSave">저장</button></div>
+    <button class="linkbtn" data-retodo>할 일 이름·시간 고치기</button>`, body => {
+    body.querySelector('[data-retodo]').addEventListener('click', () => todoForm(date, t.id));
     let done = !!t.done;
     body.querySelector('#doneToggle')?.addEventListener('click', e => {
       done = !done;
@@ -1041,7 +1059,9 @@ function workoutSheet(date, t, i) {
       <textarea class="area" id="planB" maxlength="600" placeholder="다음 날 할 운동">${esc(S.workout[tk]?.plan || '')}</textarea></div>` : ''}
     <div class="sh-sec"><span class="label">주간 루틴 · 눌러서 바꾸기</span>
       <div class="week7">${[1, 2, 3, 4, 5, 6, 0].map(d => `<button data-wd="${d}" class="${parseKey(TODAY).getDay() === d ? 'today' : ''}">${DAY[d]}<b>${esc(split[d])}</b></button>`).join('')}</div></div>
-    <div class="${date > TODAY ? '' : 'btn-row'}">${doneButton(date, t)}<button class="btn" id="woSave">저장</button></div>`, body => {
+    <div class="${date > TODAY ? '' : 'btn-row'}">${doneButton(date, t)}<button class="btn" id="woSave">저장</button></div>
+    <button class="linkbtn" data-retodo>할 일 이름·시간 고치기</button>`, body => {
+    body.querySelector('[data-retodo]').addEventListener('click', () => todoForm(date, t.id));
     let done = !!t.done, splitChanged = false;
     const pick = { a: partOf(date), b: partOf(tk) };
     body.querySelectorAll('[data-parts]').forEach(group => group.addEventListener('click', e => {
@@ -1074,6 +1094,158 @@ function workoutSheet(date, t, i) {
         toast('운동 루틴을 저장했어요');
         closeSheet();
       } catch (e) { saveFail(); }
+    });
+  });
+}
+
+const EMOJIS = ['📌', '⚡', '📚', '💻', '💪', '🧘', '🏃', '😴', '💌', '✍️', '🧹', '🎯', '🍎', '💊', '🎧', '📞'];
+const TIMES = [0, 10, 30, 60, 90, 120, 180];
+const KINDS = [
+  { id: 'normal', name: '일반' },
+  { id: 'dev', name: '사이트 개발', title: '사이트 개발', emoji: '💻' },
+  { id: 'workout', name: '운동', title: '운동', emoji: '💪' },
+  { id: 'thanks', name: '감사한 점', title: '감사한 점 적기', emoji: '💌', amount: '3개' },
+];
+
+// 지금까지 자주 넣은 할 일(이름 기준)
+function frequentTodos(exceptDate) {
+  const seen = {};
+  for (const d of Object.keys(S.days).sort()) {
+    for (const t of todosOf(d)) {
+      if (t.title === '나머지 할 일') continue;
+      const k = t.title;
+      seen[k] = { n: (seen[k]?.n || 0) + 1, t: { title: t.title, emoji: t.emoji, minutes: t.minutes, amount: t.amount, kind: t.kind } };
+    }
+  }
+  const have = new Set(todosOf(exceptDate).map(t => t.title));
+  return Object.values(seen).filter(x => !have.has(x.t.title)).sort((a, b) => b.n - a.n).slice(0, 8).map(x => x.t);
+}
+
+async function copyDay(from, to) {
+  const have = new Set(todosOf(to).map(t => t.title));
+  const add = todosOf(from).filter(t => !have.has(t.title) && t.title !== '나머지 할 일').map(t => {
+    const n = { id: newId(), emoji: t.emoji, title: t.title, done: false };
+    for (const k of ['minutes', 'amount', 'kind']) if (t[k]) n[k] = t[k];
+    if (t.kind === 'thanks') n.items = [];
+    return n;
+  });
+  if (!add.length) { toast('가져올 할 일이 없어요'); return; }
+  try {
+    await putDay(to, [...clone(rawTodos(to)), ...add]);
+    logAct(`할 일 가져오기 · ${dotDate(from)} → ${dotDate(to)}\n${add.map(t => t.title).join(', ')}`);
+    toast(`${add.length}개를 ${dotDate(to)}에 넣었어요`);
+  } catch (e) { saveFail(); }
+}
+
+function todoForm(date, id) {
+  const cur = id ? rawTodos(date).find(x => x.id === id) : null;
+  const f = { date, kind: cur?.kind || 'normal', emoji: cur?.emoji || '📌', minutes: cur?.minutes || 0 };
+  const dayChips = [TODAY, shiftKey(TODAY, 1), shiftKey(TODAY, 2)];
+  if (!dayChips.includes(date)) dayChips.push(date);
+  const rel = { [TODAY]: '오늘', [shiftKey(TODAY, 1)]: '내일', [shiftKey(TODAY, 2)]: '모레' };
+  const freq = cur ? [] : frequentTodos(date);
+  openSheet(`<div class="sh-head" style="--c:var(--violet)"><span class="q-icon"><span class="emoji" aria-hidden="true" id="tfIcon">${esc(f.emoji)}</span></span>
+      <div><h3>${cur ? '할 일 고치기' : '할 일 추가'}</h3><p class="num" id="tfDay">${dotDate(date)} ${dowOf(date)}</p></div></div>
+    ${freq.length ? `<div class="sh-sec"><span class="label">자주 하는 할 일</span><div class="parts" id="tfFreq">${freq.map((t, n) =>
+      `<button class="pchip" data-fq="${n}"><span class="emoji" aria-hidden="true">${esc(t.emoji || '📌')}</span> ${esc(t.title)}${t.minutes ? ` · ${fmtMin(t.minutes)}` : ''}</button>`).join('')}</div></div>` : ''}
+    ${cur ? '' : `<div class="sh-sec"><span class="label">날짜</span><div class="parts" id="tfDate">${dayChips.map(d =>
+      `<button class="pchip" data-d="${d}" aria-pressed="${d === date}">${rel[d] ? `${rel[d]} ` : ''}${dotDate(d)}</button>`).join('')}</div></div>`}
+    <div class="sh-sec"><span class="label">종류</span><div class="parts" id="tfKind">${KINDS.map(k =>
+      `<button class="pchip" data-k="${k.id}" aria-pressed="${k.id === f.kind}">${k.name}</button>`).join('')}</div></div>
+    <div class="sh-sec"><span class="label">이름</span><input class="field" id="tfTitle" maxlength="40" placeholder="예: 전기 공부" value="${esc(cur?.title || '')}"></div>
+    <div class="sh-sec"><span class="label">아이콘</span><div class="emo-grid" id="tfEmoji">${EMOJIS.map(e =>
+      `<button class="emo" data-e="${e}" aria-pressed="${e === f.emoji}" aria-label="${e}"><span class="emoji">${e}</span></button>`).join('')}</div></div>
+    <div class="sh-sec"><span class="label">걸리는 시간</span><div class="parts" id="tfTime">${TIMES.map(m =>
+      `<button class="pchip" data-m="${m}" aria-pressed="${m === f.minutes}">${m ? fmtMin(m) : '없음'}</button>`).join('')}</div>
+      <div class="numfield"><input class="field" id="tfMin" inputmode="numeric" placeholder="직접 입력" value="${f.minutes && !TIMES.includes(f.minutes) ? f.minutes : ''}"><span>분</span></div></div>
+    <div class="sh-sec"><span class="label">양 (시간이 아닌 것)</span><input class="field" id="tfAmt" maxlength="20" placeholder="예: 3개, 조금" value="${esc(cur?.amount || '')}"></div>
+    ${cur ? '<div class="btn-row"><button class="btn ghost" id="tfRemove">할 일 빼기</button><button class="btn" id="tfSave">저장</button></div>'
+      : '<div class="btn-row"><button class="btn ghost" id="tfMore">넣고 하나 더</button><button class="btn" id="tfSave">넣기</button></div>'}`, body => {
+    const $ = q => body.querySelector(q);
+    const press = (box, attr, val) => box?.querySelectorAll(`[${attr}]`).forEach(x => x.setAttribute('aria-pressed', x.getAttribute(attr) === String(val)));
+    const setEmoji = e => { f.emoji = e; $('#tfIcon').textContent = e; press($('#tfEmoji'), 'data-e', e); };
+    const setMin = m => { f.minutes = m; press($('#tfTime'), 'data-m', m); if (TIMES.includes(m)) $('#tfMin').value = ''; };
+    $('#tfDate')?.addEventListener('click', e => {
+      const b = e.target.closest('[data-d]'); if (!b) return;
+      f.date = b.dataset.d; press($('#tfDate'), 'data-d', f.date);
+      $('#tfDay').textContent = `${dotDate(f.date)} ${dowOf(f.date)}`;
+    });
+    $('#tfKind').addEventListener('click', e => {
+      const b = e.target.closest('[data-k]'); if (!b) return;
+      const prev = KINDS.find(k => k.id === f.kind), k = KINDS.find(x => x.id === b.dataset.k);
+      f.kind = k.id; press($('#tfKind'), 'data-k', k.id);
+      const title = $('#tfTitle');
+      if (k.title && (!title.value || title.value === prev?.title)) title.value = k.title;
+      if (k.emoji) setEmoji(k.emoji);
+      if (k.amount && !$('#tfAmt').value) $('#tfAmt').value = k.amount;
+      if (k.id === 'thanks') setMin(0);
+    });
+    $('#tfEmoji').addEventListener('click', e => { const b = e.target.closest('[data-e]'); if (b) setEmoji(b.dataset.e); });
+    $('#tfTime').addEventListener('click', e => { const b = e.target.closest('[data-m]'); if (b) setMin(Number(b.dataset.m)); });
+    $('#tfMin').addEventListener('input', e => {
+      e.target.value = e.target.value.replace(/[^\d]/g, '');
+      f.minutes = Number(e.target.value) || 0;
+      press($('#tfTime'), 'data-m', TIMES.includes(f.minutes) ? f.minutes : 'x');
+    });
+    $('#tfFreq')?.addEventListener('click', e => {
+      const b = e.target.closest('[data-fq]'); if (!b) return;
+      const t = freq[Number(b.dataset.fq)];
+      $('#tfTitle').value = t.title;
+      $('#tfAmt').value = t.amount || '';
+      setEmoji(t.emoji || '📌');
+      setMin(t.minutes || 0);
+      if (!TIMES.includes(t.minutes || 0)) $('#tfMin').value = t.minutes;
+      f.kind = t.kind || 'normal'; press($('#tfKind'), 'data-k', f.kind);
+    });
+    const read = () => {
+      const title = $('#tfTitle').value.trim();
+      if (!title) { toast('이름을 넣어 주세요'); $('#tfTitle').focus(); return null; }
+      const t = { emoji: f.emoji, title };
+      if (f.minutes > 0) t.minutes = f.minutes;
+      const amt = $('#tfAmt').value.trim();
+      if (amt) t.amount = amt;
+      if (f.kind !== 'normal') t.kind = f.kind;
+      return t;
+    };
+    const save = async more => {
+      const v = read(); if (!v) return;
+      const d = f.date;
+      if (v.kind === 'thanks') {
+        if (d < TODAY) { toast('지난 날에는 감사한 점을 넣을 수 없어요'); return; }
+        if (todosOf(d).some(t => t.kind === 'thanks' && t.id !== cur?.id)) { toast('그날에는 이미 감사한 점이 있어요'); return; }
+      }
+      try {
+        if (cur) {
+          const todos = clone(rawTodos(date)), x = todos.find(t => t.id === cur.id);
+          const prev = { title: x.title, emoji: x.emoji, minutes: x.minutes, amount: x.amount, kind: x.kind };
+          for (const k of ['minutes', 'amount', 'kind']) delete x[k];
+          Object.assign(x, v, { history: [...(x.history || []), { ...prev, at: new Date().toISOString() }] });
+          if (v.kind === 'thanks' && !x.items) x.items = [];
+          await putDay(date, todos);
+          logAct(`할 일 고침 · ${dotDate(date)} ${prev.title}${prev.minutes ? ` ${fmtMin(prev.minutes)}` : ''} → ${v.title}${v.minutes ? ` ${fmtMin(v.minutes)}` : ''}`);
+          toast('고쳤어요');
+          closeSheet();
+        } else {
+          const t = { id: newId(), ...v, done: false };
+          if (t.kind === 'thanks') t.items = [];
+          await putDay(d, [...clone(rawTodos(d)), t]);
+          logAct(`할 일 추가 · ${dotDate(d)} ${t.title}${t.minutes ? ` ${fmtMin(t.minutes)}` : ''}${t.amount ? ` ${t.amount}` : ''}`);
+          window.FX?.burst(innerWidth / 2, innerHeight * 0.7, 14);
+          if (more) {
+            toast(`${dotDate(d)}에 넣었어요 · 이어서 넣으세요`);
+            $('#tfTitle').value = ''; $('#tfAmt').value = ''; $('#tfMin').value = '';
+            setMin(0); setEmoji('📌'); f.kind = 'normal'; press($('#tfKind'), 'data-k', 'normal');
+            $('#tfTitle').focus();
+          } else { toast(`${dotDate(d)}에 넣었어요`); closeSheet(); }
+        }
+      } catch (e) { saveFail(); }
+    };
+    $('#tfSave').addEventListener('click', () => save(false));
+    $('#tfMore')?.addEventListener('click', () => save(true));
+    $('#tfRemove')?.addEventListener('click', async () => {
+      const todos = clone(rawTodos(date));
+      Object.assign(todos.find(t => t.id === cur.id), { removed: true, removedAt: new Date().toISOString() });
+      try { await putDay(date, todos); logAct(`할 일 뺌 · ${dotDate(date)} ${cur.title}`); toast('목록에서 뺐어요 (기록은 남아요)'); closeSheet(); } catch (e) { saveFail(); }
     });
   });
 }
@@ -1113,6 +1285,8 @@ $view.addEventListener('click', e => {
   if (day) {
     if (UI.sel === day.dataset.k) return;
     UI.sel = day.dataset.k;
+    UI.edit = null;
+    $view.classList.remove('still');
     $view.querySelectorAll('.mcal [data-k]').forEach(x => x.setAttribute('aria-pressed', x.dataset.k === UI.sel));
     const area = document.getElementById('dayArea');
     area.innerHTML = dayAreaHTML();
@@ -1121,11 +1295,23 @@ $view.addEventListener('click', e => {
   }
   const check = e.target.closest('[data-check]');
   if (check) { e.stopPropagation(); if (!check.disabled) toggleDone(check.closest('.qcard')); return; }
+  const add = e.target.closest('[data-add]');
+  if (add) { todoForm(add.dataset.add, null); return; }
+  const copy = e.target.closest('[data-copy]');
+  if (copy) { const [from, to] = copy.dataset.copy.split('>'); copyDay(from, to); return; }
+  const et = e.target.closest('[data-edit-toggle]');
+  if (et) {
+    UI.edit = UI.edit === et.dataset.editToggle ? null : et.dataset.editToggle;
+    const area = document.getElementById('dayArea');
+    if (area) { $view.classList.add('still'); UI.still = true; area.innerHTML = dayAreaHTML(); UI.still = false; }
+    return;
+  }
   const card = e.target.closest('.qcard');
   if (card) {
-    const t = todosOf(card.dataset.date).find(x => x.id === card.dataset.id);
+    const date = card.dataset.date, t = todosOf(date).find(x => x.id === card.dataset.id);
     if (!t) return;
-    if (['thanks', 'dev', 'workout'].includes(t.kind)) openTask(card.dataset.date, t.id);
+    if (UI.edit === date || (date > TODAY && !['dev', 'workout'].includes(t.kind))) todoForm(date, t.id);
+    else if (['thanks', 'dev', 'workout'].includes(t.kind)) openTask(date, t.id);
     else toggleDone(card);
     return;
   }
