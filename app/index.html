@@ -32,17 +32,35 @@
   <main id="view"></main>
 </div>
 
-<button class="fab" id="fab" aria-label="매니저와 대화">
-  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>
+<button class="fab" id="fab" aria-label="매니저" aria-controls="mgr" aria-expanded="false">
+  <svg class="fab-star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>
+  <svg class="fab-x" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
 </button>
 
-<div class="composer" id="composer" hidden>
-  <form id="chatForm">
-    <textarea class="field" id="chatInput" rows="1" maxlength="1000" placeholder="매니저에게 말하기" aria-label="매니저에게 보낼 말"></textarea>
-    <button class="send" id="chatSend" type="submit" aria-label="보내기">
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
-  </form>
+<div class="mgr" id="mgr" inert>
+  <div class="scrim" data-mgr-close></div>
+  <section class="mgr-panel" role="dialog" aria-label="매니저">
+    <header class="mgr-head">
+      <span class="av"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg></span>
+      <b>매니저</b>
+      <button class="icon-btn" data-mgr-close aria-label="닫기">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div class="mgr-list" id="mgrList" aria-live="polite"></div>
+    <div class="mgr-quick" id="mgrQuick">
+      <button class="chip soft" data-q="오늘 할 일 다 했어">오늘 다 했어</button>
+      <button class="chip soft" data-q="내일 할 일에 ">내일 할 일 추가</button>
+      <button class="chip soft" data-q="내일 운동은 ">내일 운동</button>
+      <button class="chip soft" data-q="잔액 ">잔액 입력</button>
+    </div>
+    <form id="chatForm" class="mgr-form">
+      <textarea class="field" id="chatInput" rows="1" maxlength="1000" placeholder="매니저에게 말하기" aria-label="매니저에게 보낼 말"></textarea>
+      <button class="send" id="chatSend" type="submit" aria-label="보내기">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </form>
+  </section>
 </div>
 
 <div class="sheet-wrap" id="sheet" inert>

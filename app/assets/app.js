@@ -184,9 +184,9 @@ async function connect() {
     const msgs = d.data()?.messages || [];
     if (same(msgs, S.chat)) return;
     S.chat = msgs;
-    if (UI.view === 'chat' && !UI.pending) refresh();
+    if (!UI.pending && $mgr.classList.contains('open')) paintChat();
   }, () => {});
-  if (UI.view === 'chat') refresh();
+  if ($mgr.classList.contains('open')) paintChat();
 }
 
 /* ---------- 조각 ---------- */
@@ -300,7 +300,7 @@ function dayAreaHTML() {
   let html = heroHTML(date, 0);
   if (!todos.length) {
     html += `<div class="panel anim" style="--i:1"><p class="empty">등록된 할 일이 없어요</p>
-      <button class="btn ghost" data-go="chat" style="width:100%; margin-top:8px">매니저에게 말하기</button></div>`;
+      <button class="btn ghost" data-chat style="margin-top:8px">매니저에게 말하기</button></div>`;
   } else {
     if (rateOf(date) === 100 && date <= TODAY) {
       html += `<div class="panel allclear anim" style="--i:1">
@@ -473,40 +473,77 @@ function viewSoon(item) {
     </section>`;
 }
 
-/* ---------- 화면: 매니저와 대화 ---------- */
-function msgHTML(m, idx) {
+/* ---------- 매니저 패널 ---------- */
+let seenMsgs = 0;
+function msgHTML(m, fresh) {
   const me = m.role === 'user';
   const acts = (m.actions || []).map(a => `<span class="chip soft">${esc(a)}</span>`).join('');
   const undo = !me && UI.undo[m.at] ? `<button class="undo" data-undo="${m.at}">되돌리기</button>` : '';
-  return `<div class="msg${me ? ' me' : ''} anim" style="--i:${Math.min(idx, 8)}">
+  return `<div class="msg${me ? ' me' : ''}${fresh ? ' pop-in' : ''}">
     ${me ? '' : `<span class="av">${ICON.starPlain}</span>`}
     <div style="min-width:0">
-      <div class="${me ? '' : 'panel '}bubble">${esc(m.content)}</div>
+      <div class="bubble">${esc(m.content)}</div>
       ${acts || undo ? `<div class="acts">${acts}${undo}</div>` : ''}
     </div>
   </div>`;
 }
 
-function viewChat() {
+function chatHTML() {
   const list = S.chat.slice(-40);
-  let html = `<div class="view-title anim" style="--i:0">${ICON.star}<h1>매니저와 대화</h1></div><div class="chat" id="chatList">`;
+  let html = '';
   if (UI.sample === false) {
-    html += '<div class="panel anim" style="--i:1"><p class="empty">이 화면에서는 매니저를 부를 수 없어요. claude.ai에서 열어 주세요.</p></div>';
+    html += '<p class="empty">이 화면에서는 매니저를 부를 수 없어요. claude.ai에서 열어 주세요.</p>';
   } else if (!list.length && !UI.pending) {
-    html += msgHTML({ role: 'assistant', content: '넣을 걸 말해 주세요.\n할 일 추가·체크, 운동 루틴, 통장 잔액처럼 말하면 그 자리에 넣어 둘게요.' }, 1);
+    html += msgHTML({ role: 'assistant', content: '넣을 걸 말해 주세요.\n할 일 추가·체크, 운동 루틴, 통장 잔액처럼 말하면 그 자리에 넣어 둘게요.' }, true);
   }
-  list.forEach((m, i) => { html += msgHTML(m, i + 1); });
+  list.forEach((m, i) => { html += msgHTML(m, i >= seenMsgs); });
+  seenMsgs = list.length;
   if (UI.pending) {
-    html += msgHTML({ role: 'user', content: UI.pending.user }, list.length + 1);
-    html += `<div class="msg"><span class="av">${ICON.starPlain}</span><div style="min-width:0"><div class="panel bubble" id="liveBubble">${UI.pending.text ? esc(UI.pending.text) : '<span class="thinking" aria-label="생각 중"><i></i><i></i><i></i></span>'}</div>
+    html += msgHTML({ role: 'user', content: UI.pending.user }, false);
+    html += `<div class="msg"><span class="av">${ICON.starPlain}</span><div style="min-width:0"><div class="bubble" id="liveBubble">${UI.pending.text ? esc(UI.pending.text) : '<span class="thinking" aria-label="생각 중"><i></i><i></i><i></i></span>'}</div>
       ${UI.pending.acts.length ? `<div class="acts">${UI.pending.acts.map(a => `<span class="chip soft">${esc(a)}</span>`).join('')}</div>` : ''}</div></div>`;
   }
-  return html + '</div>';
+  return html;
+}
+
+const $mgr = document.getElementById('mgr');
+const $mgrList = document.getElementById('mgrList');
+function paintChat() {
+  $mgrList.innerHTML = chatHTML();
+  chatToBottom(true);
+}
+function openChat() {
+  if ($mgr.classList.contains('open')) { $input.focus(); return; }
+  const r = $fab.getBoundingClientRect();
+  $mgr.style.setProperty('--fx', `${r.left + r.width / 2}px`);
+  $mgr.style.setProperty('--fy', `${r.top + r.height / 2}px`);
+  paintChat();
+  $mgr.classList.add('open');
+  $mgr.inert = false;
+  $fab.setAttribute('aria-expanded', 'true');
+  $fab.classList.add('on');
+  if (matchMedia('(max-width: 959px)').matches) document.documentElement.style.overflow = 'hidden';
+  setTimeout(() => $input.focus({ preventScroll: true }), 120);
+}
+// 휴대폰 키보드가 올라오면 대화창을 그 위로 올린다
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const fit = () => $mgr.style.setProperty('--kb', `${Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop))}px`);
+  vv.addEventListener('resize', fit);
+  vv.addEventListener('scroll', fit);
+}
+function closeChat() {
+  if (!$mgr.classList.contains('open')) return;
+  $mgr.classList.remove('open');
+  $mgr.inert = true;
+  $fab.setAttribute('aria-expanded', 'false');
+  $fab.classList.remove('on');
+  document.documentElement.style.overflow = '';
+  $input.blur();
 }
 
 /* ---------- 그리기 ---------- */
 const $view = document.getElementById('view');
-const $composer = document.getElementById('composer');
 const $fab = document.getElementById('fab');
 
 function countUp(root) {
@@ -526,12 +563,12 @@ function countUp(root) {
   }));
 }
 
-const routeId = () => (MENU.some(x => x.id === location.hash.slice(1)) ? location.hash.slice(1) : 'today');
+const routeId = () => (MENU.some(x => x.id !== 'chat' && x.id === location.hash.slice(1)) ? location.hash.slice(1) : 'today');
 
 function renderView(id) {
   const item = MENU.find(x => x.id === id);
   return id === 'today' ? viewToday() : id === 'archive' ? viewArchive() : id === 'money' ? viewMoney()
-    : id === 'fixed' ? viewFixed() : id === 'chat' ? viewChat() : viewSoon(item);
+    : id === 'fixed' ? viewFixed() : viewSoon(item);
 }
 
 // mode: enter(등장 애니메이션) | update(제자리 갱신) | route(화면 전환)
@@ -546,8 +583,6 @@ function paint(mode = 'enter') {
     $view.classList.remove('leave');
     $view.innerHTML = renderView(id);
     UI.view = id;
-    $composer.hidden = id !== 'chat';
-    $fab.hidden = id === 'chat';
     document.title = id === 'today' ? '일상 매니저' : `${item.name} · 일상 매니저`;
     document.querySelectorAll('.menu nav a').forEach(a => (a.dataset.id === id ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
     if (still) {
@@ -556,7 +591,6 @@ function paint(mode = 'enter') {
     } else countUp($view);
     UI.still = false;
     paintHud();
-    if (id === 'chat' && (!still || UI.pending)) chatToBottom();
   };
   if (mode === 'route' && UI.view && !reduce) {
     $view.classList.add('leave');
@@ -789,8 +823,7 @@ function balanceSheet(bankId) {
 
 /* ---------- 화면 안 클릭 ---------- */
 $view.addEventListener('click', e => {
-  const go = e.target.closest('[data-go]');
-  if (go) { location.hash = `#${go.dataset.go}`; return; }
+  if (e.target.closest('[data-chat]')) { openChat(); return; }
   const shift = e.target.closest('[data-shift]');
   if (shift) {
     const n = +shift.dataset.shift, home = shift.dataset.scope === 'home';
@@ -826,15 +859,13 @@ $view.addEventListener('click', e => {
   }
   const acct = e.target.closest('[data-acct]');
   if (acct) { balanceSheet(acct.dataset.acct); return; }
-  const undo = e.target.closest('[data-undo]');
-  if (undo) { undoTurn(undo.dataset.undo); }
 });
 $view.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('qcard')) { e.preventDefault(); e.target.click(); }
 });
 
 /* ---------- 매니저 대화 ---------- */
-function chatToBottom() { requestAnimationFrame(() => scrollTo({ top: document.body.scrollHeight, behavior: reduce ? 'auto' : 'smooth' })); }
+function chatToBottom(instant) { requestAnimationFrame(() => $mgrList.scrollTo({ top: $mgrList.scrollHeight, behavior: instant || reduce ? 'auto' : 'smooth' })); }
 const slim = t => {
   const o = { id: t.id, title: t.title, done: !!t.done };
   for (const k of ['kind', 'minutes', 'amount', 'note', 'emoji']) if (t[k]) o[k] = t[k];
@@ -1047,7 +1078,7 @@ async function undoTurn(at) {
     }
     delete UI.undo[at];
     toast('되돌렸어요');
-    refresh();
+    paintChat();
   } catch (e) { saveFail(); }
 }
 
@@ -1080,7 +1111,7 @@ async function send() {
   UI.pending = { user: text, text: '', acts };
   UI.ctl = new AbortController();
   setBusy(true);
-  refresh();
+  paintChat();
   const history = S.chat.slice(-12).map(m => ({ role: m.role, content: m.content }));
   const turns = [{ role: 'user', content: instructions() }, ...history, { role: 'user', content: text }];
   let answer = '', failed = '';
@@ -1112,8 +1143,23 @@ async function send() {
   UI.ctl = null;
   setBusy(false);
   await putChat(messages);
-  refresh();
+  paintChat();
+  $input.focus({ preventScroll: true });
 }
+
+$mgrList.addEventListener('click', e => {
+  const undo = e.target.closest('[data-undo]');
+  if (undo) undoTurn(undo.dataset.undo);
+});
+$mgr.querySelectorAll('[data-mgr-close]').forEach(b => b.addEventListener('click', closeChat));
+document.getElementById('mgrQuick').addEventListener('click', e => {
+  const q = e.target.closest('[data-q]');
+  if (!q) return;
+  $input.value = q.dataset.q;
+  $input.dispatchEvent(new Event('input'));
+  $input.focus();
+  $input.setSelectionRange($input.value.length, $input.value.length);
+});
 
 document.getElementById('chatForm').addEventListener('submit', e => { e.preventDefault(); send(); });
 $input.addEventListener('keydown', e => {
@@ -1143,18 +1189,27 @@ function setupMenu() {
   };
   btn.onclick = () => set(true);
   menu.querySelector('[data-close]').onclick = () => set(false);
-  menu.querySelectorAll('nav a').forEach(a => (a.onclick = () => set(false)));
+  menu.querySelectorAll('nav a').forEach(a => (a.onclick = e => {
+    set(false);
+    if (a.dataset.id === 'chat') { e.preventDefault(); setTimeout(openChat, 250); }
+  }));
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
     if (menu.classList.contains('open')) set(false);
     else if ($sheet.classList.contains('open')) closeSheet();
+    else if ($mgr.classList.contains('open')) closeChat();
   });
 }
 
 /* ---------- 시작 ---------- */
 setupMenu();
-$fab.addEventListener('click', () => { location.hash = '#chat'; });
-addEventListener('hashchange', () => { closeSheet(); paint('route'); });
+$fab.addEventListener('click', () => ($mgr.classList.contains('open') ? closeChat() : openChat()));
+addEventListener('hashchange', () => {
+  closeSheet();
+  if (location.hash === '#chat') { location.hash = '#today'; openChat(); return; }
+  paint('route');
+});
+if (location.hash === '#chat') { location.hash = '#today'; setTimeout(openChat, 400); }
 paint('enter');
 connect();
 
