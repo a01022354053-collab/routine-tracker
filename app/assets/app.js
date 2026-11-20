@@ -1,0 +1,1177 @@
+// 일상 매니저 — Claude 아티팩트로 여는 한 화면 앱.
+// 기록은 아티팩트 저장소(db)에 두고, 체크·감사한 점·운동·잔액은 화면에서 바로 고친다.
+// 매니저 대화는 sample 기능으로 Claude를 불러, 아래 도구로만 기록을 바꾼다.
+
+/* ---------- 고정 값 ---------- */
+const DAY = ['일', '월', '화', '수', '목', '금', '토'];
+const WEEK_HEAD = ['월', '화', '수', '목', '금', '토', '일'];
+const PAL = ['var(--yellow)', 'var(--cyan)', 'var(--pink)', 'var(--lime)', 'var(--orange)', 'var(--violet)'];
+const XP_PER_LEVEL = 500;
+const PARTS = ['등', '가슴', '하체', '휴식'];
+// 요일(0=일)별 운동 부위: 금 등, 토 가슴, 일 하체, 월 등, 화 가슴, 수 하체, 목 휴식
+const DEFAULT_SPLIT = { 0: '하체', 1: '등', 2: '가슴', 3: '하체', 4: '휴식', 5: '등', 6: '가슴' };
+const BANKS = [
+  { id: 'nh', name: '농협', short: '농', color: '#3ddc84' },
+  { id: 'kakao', name: '카카오뱅크', short: '카', color: '#ffe81a' },
+  { id: 'shinhan', name: '신한', short: '신', color: '#5b8cff' },
+];
+const DEFAULT_MONEY = { payday: 10, savings: 550000, spend: 650000, balances: { nh: null, kakao: null, shinhan: null } };
+
+const MENU = [
+  { id: 'today', emoji: '📅', name: '오늘 루틴' },
+  { id: 'archive', emoji: '🗂️', name: '저장소' },
+  { id: 'chat', emoji: '💬', name: '매니저와 대화' },
+  { id: 'money', emoji: '💰', name: '돈 관리' },
+  { id: 'fixed', emoji: '🧾', name: '고정 지출' },
+  { id: 'items', emoji: '🎒', name: '내 물건' },
+  { id: 'shopping', emoji: '🛒', name: '필요한 물건' },
+];
+
+/* ---------- 작은 도구 ---------- */
+const pad = n => String(n).padStart(2, '0');
+const keyOf = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseKey = k => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const shiftKey = (k, n) => keyOf(addDays(parseKey(k), n));
+const dotDate = k => { const d = parseKey(k); return `${pad(d.getMonth() + 1)}.${pad(d.getDate())}`; };
+const dowOf = k => `${DAY[parseKey(k).getDay()]}요일`;
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtMin = m => { const h = Math.floor(m / 60), r = m % 60; return h && r ? `${h}시간 ${r}분` : h ? `${h}시간` : `${r}분`; };
+const won = n => `${Math.round(n).toLocaleString('ko-KR')}원`;
+const manwon = n => (n % 10000 === 0 ? `${(n / 10000).toLocaleString('ko-KR')}만원` : won(n));
+const clone = v => (v == null ? v : JSON.parse(JSON.stringify(v)));
+const newId = () => `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+// 키 순서와 상관없이 같은 내용인지 비교한다 (내가 방금 쓴 값이 돌아올 때 다시 그리지 않으려고)
+const stable = v => (Array.isArray(v) ? `[${v.map(stable).join(',')}]`
+  : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`
+  : JSON.stringify(v ?? null));
+const same = (a, b) => stable(a) === stable(b);
+
+/* ---------- 상태 ---------- */
+let NOW = new Date();
+let TODAY = keyOf(NOW);
+const S = { days: {}, workout: {}, split: { ...DEFAULT_SPLIT }, money: clone(DEFAULT_MONEY), chat: [] };
+const UI = {
+  status: 'loading', // loading | ok | slow | nodb
+  sel: TODAY, y: NOW.getFullYear(), m: NOW.getMonth(), ay: NOW.getFullYear(), am: NOW.getMonth(),
+  view: null, dataPainted: false, still: false,
+  pending: null, ctl: null, undo: {}, sample: undefined,
+};
+let DB = null, SAMPLE = null;
+
+/* ---------- 계산 ---------- */
+const todosOf = date => S.days[date]?.todos || [];
+const xpOfTask = t => t.minutes || 30;
+const isFailed = (t, date) => t.kind === 'thanks' && !t.done && date < TODAY;
+const partOf = date => S.workout[date]?.part || S.split[parseKey(date).getDay()] || '휴식';
+function rateOf(date) {
+  const t = todosOf(date);
+  return t.length ? Math.round((t.filter(x => x.done).length / t.length) * 100) : null;
+}
+// 오늘까지의 날짜만 센다: 달성률은 하루 달성률의 평균
+function monthStats(y, m) {
+  const prefix = `${y}-${pad(m + 1)}-`;
+  const dates = Object.keys(S.days).filter(d => d.startsWith(prefix) && d <= TODAY && todosOf(d).length);
+  const tasks = dates.flatMap(todosOf);
+  return {
+    count: dates.length,
+    rate: dates.length ? Math.round(dates.reduce((s, d) => s + rateOf(d), 0) / dates.length) : null,
+    done: tasks.filter(t => t.done).length,
+    total: tasks.length,
+    xp: tasks.filter(t => t.done).reduce((s, t) => s + xpOfTask(t), 0),
+  };
+}
+function totalXp() {
+  return Object.keys(S.days).filter(d => d <= TODAY).flatMap(todosOf).filter(t => t.done).reduce((s, t) => s + xpOfTask(t), 0);
+}
+function streak() {
+  let d = rateOf(TODAY) === 100 ? TODAY : shiftKey(TODAY, -1), n = 0;
+  while (rateOf(d) === 100) { n++; d = shiftKey(d, -1); }
+  return n;
+}
+function untilMidnight() {
+  const end = addDays(new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate()), 1);
+  const mins = Math.max(0, Math.ceil((end - NOW) / 60000));
+  return fmtMin(mins);
+}
+
+/* ---------- 저장소 연결 ---------- */
+const chains = {};
+function queue(path, fn) {
+  const p = (chains[path] || Promise.resolve()).then(fn);
+  chains[path] = p.catch(() => {});
+  return p;
+}
+function saveFail() { toast('저장하지 못했어요. 잠시 후 다시 해 주세요.'); }
+
+async function putDay(date, todos) {
+  if (!DB) { toast('기록을 저장할 수 없는 화면이에요'); throw new Error('저장소에 연결되지 않았어요'); }
+  if (todos === null) { delete S.days[date]; refresh(); return queue(`days/${date}`, () => DB.doc(`days/${date}`).delete()); }
+  S.days[date] = { date, todos };
+  refresh();
+  return queue(`days/${date}`, () => DB.doc(`days/${date}`).set({ date, todos }));
+}
+async function putWorkout(date, data) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  if (data === null) { delete S.workout[date]; refresh(); return queue(`workout/${date}`, () => DB.doc(`workout/${date}`).delete()); }
+  S.workout[date] = { date, ...data };
+  refresh();
+  return queue(`workout/${date}`, () => DB.doc(`workout/${date}`).set({ date, ...data }));
+}
+async function putSplit(split) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.split = { ...split };
+  refresh();
+  return queue('settings/main', () => DB.doc('settings/main').set({ split }));
+}
+async function putMoney(money) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.money = clone(money);
+  refresh();
+  return queue('money/main', () => DB.doc('money/main').set(money));
+}
+async function putChat(messages) {
+  S.chat = messages.slice(-60);
+  if (!DB) return;
+  return queue('chat/log', () => DB.doc('chat/log').set({ messages: S.chat })).catch(() => {});
+}
+
+async function connect() {
+  const c = window.claude;
+  const [db, sample] = await Promise.all([
+    c?.use ? c.use('db').catch(() => null) : null,
+    c?.use ? c.use('sample').catch(() => null) : null,
+  ]);
+  SAMPLE = sample;
+  UI.sample = !!sample;
+  if (!db) { UI.status = 'nodb'; refresh(true); return; }
+  DB = db;
+  const slow = setTimeout(() => { if (UI.status === 'loading') { UI.status = 'slow'; refresh(true); } }, 10000);
+  const onErr = () => { clearTimeout(slow); if (UI.status !== 'ok') { UI.status = 'slow'; refresh(true); } };
+  DB.collection('days').onSnapshot(snap => {
+    const o = {};
+    snap.docs.forEach(d => { o[d.id] = d.data(); });
+    const wasReady = UI.status === 'ok';
+    if (!snap.metadata.fromCache) clearTimeout(slow);
+    UI.status = 'ok';
+    if (wasReady && same(o, S.days)) return;
+    S.days = o;
+    refresh();
+  }, onErr);
+  DB.collection('workout').onSnapshot(snap => {
+    const o = {};
+    snap.docs.forEach(d => { o[d.id] = d.data(); });
+    if (same(o, S.workout)) return;
+    S.workout = o;
+    refresh();
+  }, () => {});
+  DB.doc('settings/main').onSnapshot(d => {
+    const split = { ...DEFAULT_SPLIT, ...(d.data()?.split || {}) };
+    if (same(split, S.split)) return;
+    S.split = split;
+    refresh();
+  }, () => {});
+  DB.doc('money/main').onSnapshot(d => {
+    const v = d.data() || {};
+    const money = { ...clone(DEFAULT_MONEY), ...v, balances: { ...DEFAULT_MONEY.balances, ...(v.balances || {}) } };
+    if (same(money, S.money)) return;
+    S.money = money;
+    refresh();
+  }, () => {});
+  DB.doc('chat/log').onSnapshot(d => {
+    const msgs = d.data()?.messages || [];
+    if (same(msgs, S.chat)) return;
+    S.chat = msgs;
+    if (UI.view === 'chat' && !UI.pending) refresh();
+  }, () => {});
+  if (UI.view === 'chat') refresh();
+}
+
+/* ---------- 조각 ---------- */
+const ICON = {
+  check: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  cross: '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>',
+  prev: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  next: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 5l7 7-7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  star: '<svg class="spark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>',
+  starPlain: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>',
+};
+const starSVG = (cls, style = '') => `<svg class="${cls}" style="${style}" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>`;
+const countAttr = (n, suf = '') => (UI.still ? `>${n}${suf}` : ` data-count="${n}" data-suffix="${suf}">0${suf}`);
+
+function ringHTML(rate) {
+  const r = 36, c = 2 * Math.PI * r, off = (c * (1 - rate / 100)).toFixed(2);
+  return `<div class="ring" role="img" aria-label="달성률 ${rate}%">
+    <svg viewBox="0 0 84 84"><defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffe81a"/><stop offset=".6" stop-color="#ff9a2e"/><stop offset="1" stop-color="#ff4fd8"/></linearGradient></defs>
+      <circle class="bg" cx="42" cy="42" r="${r}"/>
+      <circle class="fg" cx="42" cy="42" r="${r}" stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${UI.still ? off : c.toFixed(2)}" data-off="${off}"/></svg>
+    <b${countAttr(rate, '%')}</b></div>`;
+}
+
+function timeBarHTML(todos) {
+  const timed = todos.map((t, i) => ({ t, i })).filter(x => x.t.minutes > 0);
+  if (!timed.length) return '';
+  return `<div class="timebar" role="img" aria-label="시간 배분">${timed.map(({ t, i }, n) =>
+    `<i class="${t.done ? 'done' : ''}" style="--c:${PAL[i % PAL.length]}; --i:${n}; flex:${t.minutes}" title="${esc(t.title)} ${fmtMin(t.minutes)}"></i>`).join('')}</div>`;
+}
+
+function cardHTML(t, i, date, n) {
+  const failed = isFailed(t, date), future = date > TODAY;
+  const cls = ['panel', 'qcard', 'tilt', 'anim', t.done && 'done', failed && 'failed', future && 'future'].filter(Boolean).join(' ');
+  const meta = [];
+  if (t.minutes) meta.push(`<span class="q-time">${fmtMin(t.minutes)}</span>`);
+  if (t.amount) meta.push(`<span class="q-amt">${esc(t.amount)}</span>`);
+  if (t.kind === 'workout') meta.push(`<span class="q-tag">${esc(partOf(date))}</span>`);
+  if (t.kind === 'thanks' && !t.done && !failed && date === TODAY) {
+    meta.push(`<span class="q-due">${(t.items || []).filter(Boolean).length}/3 · 자정까지</span>`);
+  }
+  const note = t.kind === 'dev' ? t.note : t.kind === 'workout' ? S.workout[date]?.plan : '';
+  if (note) meta.push(`<span class="q-note">${esc(note)}</span>`);
+  const lockCheck = future || failed || t.kind === 'thanks';
+  return `<li class="${cls}" style="--c:${PAL[i % PAL.length]}; --i:${n}" data-date="${date}" data-id="${esc(t.id)}" tabindex="0">
+    <div class="qc-top">
+      <span class="q-icon"><span class="emoji" aria-hidden="true">${esc(t.emoji || '📌')}</span></span>
+      <button class="q-check" data-check ${lockCheck ? 'disabled' : ''} aria-pressed="${!!t.done}" aria-label="${esc(t.title)} ${t.done ? '완료 취소' : '완료'}">${failed ? ICON.cross : ICON.check}</button>
+    </div>
+    <b class="qc-title">${esc(t.title)}</b>
+    <div class="qc-meta">${meta.join('')}</div>
+    <span class="q-xp">+${xpOfTask(t)} XP</span>
+    ${t.done ? '<span class="stamp">CLEAR</span>' : failed ? '<span class="stamp fail">탈락</span>' : ''}
+  </li>`;
+}
+
+function calHTML(y, m, sel, pick) {
+  const lead = (new Date(y, m, 1).getDay() + 6) % 7, last = new Date(y, m + 1, 0).getDate();
+  let html = WEEK_HEAD.map(w => `<span class="wd">${w}</span>`).join('');
+  for (let i = 0; i < lead; i++) html += '<span class="dtile blank"></span>';
+  for (let d = 1; d <= last; d++) {
+    const k = `${y}-${pad(m + 1)}-${pad(d)}`, r = rateOf(k);
+    let cls = 'dtile', style = `--i:${lead + d}`, label = `${m + 1}월 ${d}일`;
+    if (r != null && k <= TODAY) {
+      if (r >= 100) cls += ' full'; else { cls += ' part'; style += `; --p:${Math.round(15 + r * 0.6)}%`; }
+      label += ` 달성률 ${r}%`;
+    } else if (r != null) { cls += ' plan'; label += ' 할 일 있음'; }
+    if (k === TODAY) cls += ' today';
+    html += pick
+      ? `<button class="${cls}" style="${style}" data-k="${k}" aria-pressed="${k === sel}" aria-label="${label}">${d}</button>`
+      : `<span class="${cls}" style="${style}" aria-label="${label}">${d}</span>`;
+  }
+  return html;
+}
+
+const monthNav = (y, m, scope) => `
+  <button class="nav-btn" data-shift="-1" data-scope="${scope}" aria-label="이전 달">${ICON.prev}</button>
+  <b class="disp">${y}.${pad(m + 1)}</b>
+  <button class="nav-btn" data-shift="1" data-scope="${scope}" aria-label="다음 달">${ICON.next}</button>`;
+
+function statusPanel(i) {
+  const msg = UI.status === 'nodb' ? '기록을 열 수 없어요. claude.ai에 로그인한 상태로 이 페이지를 열어 주세요.'
+    : UI.status === 'slow' ? '기록을 아직 불러오지 못했어요. 연결이 돌아오면 저절로 보여요.'
+    : '불러오는 중…';
+  return `<div class="panel anim" style="--i:${i}"><p class="empty">${msg}</p></div>`;
+}
+const ready = () => UI.status === 'ok';
+
+/* ---------- 화면: 오늘 루틴 ---------- */
+function heroHTML(date, i) {
+  const todos = todosOf(date);
+  const done = todos.filter(t => t.done).length;
+  const total = todos.reduce((s, t) => s + (t.minutes || 0), 0);
+  const rel = { [shiftKey(TODAY, -1)]: '어제', [TODAY]: '오늘', [shiftKey(TODAY, 1)]: '내일' }[date];
+  const parts = [];
+  if (todos.length) parts.push(`${todos.length}개 중 ${done}개 완료`);
+  if (total) parts.push(`계획 ${fmtMin(total)}`);
+  const r = rateOf(date);
+  return `<div class="dayhero anim" style="--i:${i}">
+    <div class="text">
+      <span class="eyebrow">${rel ? `${rel} 할 일` : '할 일'}</span>
+      <div class="dh-date"><b class="disp">${dotDate(date)}</b><span>${dowOf(date)}</span></div>
+      ${parts.length ? `<span class="dh-sub num">${parts.join(' · ')}</span>` : ''}
+    </div>
+    ${r != null && date <= TODAY ? ringHTML(r) : ''}
+  </div>`;
+}
+
+function dayAreaHTML() {
+  if (!ready()) return heroHTML(UI.sel, 0) + statusPanel(1);
+  const date = UI.sel, todos = todosOf(date);
+  let html = heroHTML(date, 0);
+  if (!todos.length) {
+    html += `<div class="panel anim" style="--i:1"><p class="empty">등록된 할 일이 없어요</p>
+      <button class="btn ghost" data-go="chat" style="width:100%; margin-top:8px">매니저에게 말하기</button></div>`;
+  } else {
+    if (rateOf(date) === 100 && date <= TODAY) {
+      html += `<div class="panel allclear anim" style="--i:1">
+        ${starSVG('s', 'left:12%;top:22%')}${starSVG('s', 'right:14%;top:16%;animation-delay:.6s')}${starSVG('s', 'right:26%;bottom:18%;width:10px;height:10px;animation-delay:1.1s')}
+        <b>ALL CLEAR</b></div>`;
+    }
+    html += `<div class="anim" style="--i:2">${timeBarHTML(todos)}</div>`;
+    html += `<ul class="qrow" aria-label="할 일">${todos.map((t, i) => cardHTML(t, i, date, 3 + i)).join('')}</ul>`;
+  }
+  const tk = shiftKey(date, 1), tmr = todosOf(tk);
+  if (date === TODAY && tmr.length) {
+    const total = tmr.reduce((s, t) => s + (t.minutes || 0), 0);
+    html += `<div class="sec anim" style="--i:5"><h2>내일 할 일</h2><span class="num">${dotDate(tk)} ${dowOf(tk)}${total ? ` · 계획 ${fmtMin(total)}` : ''}</span></div>
+      <div class="anim" style="--i:6">${timeBarHTML(tmr)}</div>
+      <ul class="qrow" aria-label="내일 할 일">${tmr.map((t, i) => cardHTML(t, i, tk, 7 + i)).join('')}</ul>`;
+  }
+  return html;
+}
+
+function calHeadHTML() {
+  const st = monthStats(UI.y, UI.m);
+  return `${monthNav(UI.y, UI.m, 'home')}${st.rate != null ? `<span class="chip num">달성률 ${st.rate}%</span>` : ''}`;
+}
+
+function viewToday() {
+  return `
+    <div class="view-title anim" style="--i:0">${ICON.star}<h1>오늘 루틴</h1></div>
+    <div class="home">
+      <div class="home-left">
+        <section class="panel anim" style="--i:1" aria-label="달력">
+          <div class="map-head" id="calHead">${calHeadHTML()}</div>
+          <div class="mcal" id="cal">${calHTML(UI.y, UI.m, UI.sel, true)}</div>
+        </section>
+      </div>
+      <div class="home-right" id="dayArea">${dayAreaHTML()}</div>
+    </div>`;
+}
+
+/* ---------- 화면: 저장소 ---------- */
+function viewArchive() {
+  const { ay: y, am: m } = UI;
+  const st = monthStats(y, m);
+  const prefix = `${y}-${pad(m + 1)}-`;
+  const dates = Object.keys(S.days).filter(d => d.startsWith(prefix) && todosOf(d).length).sort().reverse();
+  const stats = [`<span class="chip soft num">기록 ${st.count}일</span>`];
+  if (st.total) stats.push(`<span class="chip soft num">할 일 ${st.done}/${st.total}</span>`);
+  stats.push(`<span class="chip num">+${st.xp} XP</span>`);
+
+  const logs = !ready() ? statusPanel(3)
+    : !dates.length ? '<div class="panel anim" style="--i:3"><p class="empty">이 달에는 기록이 없어요</p></div>'
+    : dates.map((d, i) => {
+      const todos = todosOf(d), r = rateOf(d), future = d > TODAY;
+      const total = todos.reduce((s, t) => s + (t.minutes || 0), 0);
+      const thanks = todos.find(t => t.kind === 'thanks');
+      const items = (thanks?.items || []).filter(Boolean);
+      return `<article class="panel log tilt anim" style="--i:${3 + i}">
+        <div class="log-head"><b class="disp">${dotDate(d)}</b><span>${dowOf(d)}</span>
+          ${future ? '<span class="chip soft">예정</span>' : `<span class="chip num">${r}%</span>`}</div>
+        <p class="meta num">할 일 ${todos.length}개${total ? ` · 계획 ${fmtMin(total)}` : ''}</p>
+        <ul class="mini">${todos.map((t, j) => {
+          const failed = isFailed(t, d);
+          const right = t.minutes ? fmtMin(t.minutes) : t.kind === 'workout' ? partOf(d) : (t.amount || '');
+          return `<li class="${t.done ? 'done' : ''}${failed ? ' failed' : ''}" style="--c:${PAL[j % PAL.length]}">
+            <span class="emoji" aria-hidden="true">${esc(t.emoji || '📌')}</span>
+            <span class="n">${esc(t.title)}${failed ? ' · 탈락' : ''}</span>
+            <span class="t">${esc(right)}</span>
+            <span class="ck" role="img" aria-label="${t.done ? '완료' : failed ? '탈락' : '미완료'}">${failed ? ICON.cross : ICON.check}</span>
+          </li>`;
+        }).join('')}</ul>
+        ${items.length ? `<div class="thanks"><p>감사한 점</p><ol>${items.map(t => `<li>${esc(t)}</li>`).join('')}</ol></div>` : ''}
+      </article>`;
+    }).join('');
+
+  return `
+    <div class="view-title anim" style="--i:0">${ICON.star}<h1>저장소</h1></div>
+    <div class="arch">
+      <section class="panel season anim" style="--i:1">
+        <div class="map-head" style="margin:0">${monthNav(y, m, 'archive')}</div>
+        <div>
+          <span class="eyebrow">달성률</span>
+          <div class="disp mega"${st.rate != null ? countAttr(st.rate, '%') : '>–'}</div>
+        </div>
+        <div class="stats">${stats.join('')}</div>
+        <div class="mcal heat">${calHTML(y, m, null, false)}</div>
+        <div class="legend"><span><i class="l-part"></i>조금</span><span><i class="l-full"></i>전부</span><span><i class="l-plan"></i>예정</span></div>
+      </section>
+      <div class="log">
+        <div class="sec anim" style="--i:2"><h2>기록</h2></div>
+        ${logs}
+      </div>
+    </div>`;
+}
+
+/* ---------- 화면: 돈 관리 ---------- */
+function payInfo() {
+  const pd = S.money.payday || 10;
+  const d = NOW.getDate(), y = NOW.getFullYear(), m = NOW.getMonth();
+  const next = d < pd ? new Date(y, m, pd) : d === pd ? new Date(y, m, pd) : new Date(y, m + 1, pd);
+  const prev = d >= pd ? new Date(y, m, pd) : new Date(y, m - 1, pd);
+  const today0 = new Date(y, m, d);
+  const left = Math.round((next - today0) / 86400000);
+  const span = Math.round((next - prev) / 86400000) || 30;
+  const passed = d === pd ? 0 : Math.round((today0 - prev) / 86400000);
+  return { next, left, pct: Math.min(100, Math.round((passed / span) * 100)) };
+}
+
+function viewMoney() {
+  const M = S.money, p = payInfo();
+  const known = BANKS.filter(b => M.balances[b.id] != null);
+  const sum = known.reduce((s, b) => s + Number(M.balances[b.id] || 0), 0);
+  const both = (M.savings || 0) + (M.spend || 0) || 1;
+  return `
+    <div class="view-title anim" style="--i:0">${ICON.star}<h1>돈 관리</h1></div>
+    ${ready() ? '' : statusPanel(1)}
+    <div class="money-grid">
+      <section class="panel pay anim" style="--i:1">
+        <span class="eyebrow">월급날 · 매달 ${M.payday}일</span>
+        <div class="dday">${p.left === 0 ? 'D-DAY' : `D-${p.left}`}</div>
+        <span class="sub num">${p.next.getMonth() + 1}월 ${p.next.getDate()}일 ${DAY[p.next.getDay()]}요일</span>
+        <div class="cycle" role="img" aria-label="월급 주기 ${p.pct}% 지남"><i style="width:${p.pct}%"></i></div>
+      </section>
+      <section class="panel anim" style="--i:2">
+        <div class="sh-sec">
+          <span class="eyebrow">월급 쓰는 법</span>
+          <div class="splitbar" role="img" aria-label="적금과 쓸 돈 비율">
+            <i style="flex:${M.savings}; background: var(--cyan)"></i><i style="flex:${M.spend}; background: var(--yellow)"></i>
+          </div>
+          <div class="plan-rows">
+            <div class="plan-row"><span class="tile"><span class="emoji" aria-hidden="true">🏦</span></span><div><b>적금</b><small>월급날 자동이체</small></div><span class="amt num" style="color:var(--cyan)">${manwon(M.savings)}</span></div>
+            <div class="plan-row"><span class="tile"><span class="emoji" aria-hidden="true">💳</span></span><div><b>쓸 수 있는 돈</b><small>한 달 실제 사용</small></div><span class="amt num" style="color:var(--yellow)">${manwon(M.spend)}</span></div>
+          </div>
+        </div>
+      </section>
+      <section class="panel anim wide" style="--i:3">
+        <div class="sh-sec">
+          <div class="total"><span class="eyebrow">통장 잔액${known.length < BANKS.length ? ` · ${known.length}/${BANKS.length}개 입력` : ''}</span><b class="num">${known.length ? won(sum) : '–'}</b></div>
+          <div class="accts">${BANKS.map(b => {
+            const v = M.balances[b.id];
+            return `<button class="panel acct tilt" data-acct="${b.id}" style="--b:${b.color}">
+              <span class="bank">${b.short}</span>
+              <div><b>${b.name}</b><small>눌러서 잔액 입력</small></div>
+              <span class="bal num${v == null ? ' none' : ''}">${v == null ? '아직 없음' : won(v)}</span>
+            </button>`;
+          }).join('')}</div>
+        </div>
+      </section>
+    </div>`;
+}
+
+function viewFixed() {
+  const M = S.money;
+  return `
+    <div class="view-title anim" style="--i:0">${ICON.star}<h1>고정 지출</h1></div>
+    <section class="panel anim" style="--i:1">
+      <div class="sh-sec">
+        <div class="total"><span class="eyebrow">매달 나가는 돈</span><b class="num">${manwon(M.savings)}</b></div>
+        <div class="fixed-list">
+          <div class="plan-row"><span class="tile"><span class="emoji" aria-hidden="true">🏦</span></span><div><b>적금</b><small>매달 ${M.payday}일 자동이체</small></div><span class="amt num" style="color:var(--cyan)">${manwon(M.savings)}</span></div>
+        </div>
+      </div>
+    </section>`;
+}
+
+function viewSoon(item) {
+  return `
+    <div class="view-title anim" style="--i:0">${ICON.star}<h1>${item.name}</h1></div>
+    <section class="panel soon anim" style="--i:1">
+      <span class="emoji big" aria-hidden="true">${item.emoji}</span>
+      <p class="empty">아직 비어 있어요</p>
+    </section>`;
+}
+
+/* ---------- 화면: 매니저와 대화 ---------- */
+function msgHTML(m, idx) {
+  const me = m.role === 'user';
+  const acts = (m.actions || []).map(a => `<span class="chip soft">${esc(a)}</span>`).join('');
+  const undo = !me && UI.undo[m.at] ? `<button class="undo" data-undo="${m.at}">되돌리기</button>` : '';
+  return `<div class="msg${me ? ' me' : ''} anim" style="--i:${Math.min(idx, 8)}">
+    ${me ? '' : `<span class="av">${ICON.starPlain}</span>`}
+    <div style="min-width:0">
+      <div class="${me ? '' : 'panel '}bubble">${esc(m.content)}</div>
+      ${acts || undo ? `<div class="acts">${acts}${undo}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function viewChat() {
+  const list = S.chat.slice(-40);
+  let html = `<div class="view-title anim" style="--i:0">${ICON.star}<h1>매니저와 대화</h1></div><div class="chat" id="chatList">`;
+  if (UI.sample === false) {
+    html += '<div class="panel anim" style="--i:1"><p class="empty">이 화면에서는 매니저를 부를 수 없어요. claude.ai에서 열어 주세요.</p></div>';
+  } else if (!list.length && !UI.pending) {
+    html += msgHTML({ role: 'assistant', content: '넣을 걸 말해 주세요.\n할 일 추가·체크, 운동 루틴, 통장 잔액처럼 말하면 그 자리에 넣어 둘게요.' }, 1);
+  }
+  list.forEach((m, i) => { html += msgHTML(m, i + 1); });
+  if (UI.pending) {
+    html += msgHTML({ role: 'user', content: UI.pending.user }, list.length + 1);
+    html += `<div class="msg"><span class="av">${ICON.starPlain}</span><div style="min-width:0"><div class="panel bubble" id="liveBubble">${UI.pending.text ? esc(UI.pending.text) : '<span class="thinking" aria-label="생각 중"><i></i><i></i><i></i></span>'}</div>
+      ${UI.pending.acts.length ? `<div class="acts">${UI.pending.acts.map(a => `<span class="chip soft">${esc(a)}</span>`).join('')}</div>` : ''}</div></div>`;
+  }
+  return html + '</div>';
+}
+
+/* ---------- 그리기 ---------- */
+const $view = document.getElementById('view');
+const $composer = document.getElementById('composer');
+const $fab = document.getElementById('fab');
+
+function countUp(root) {
+  root.querySelectorAll('[data-count]').forEach(el => {
+    const to = +el.dataset.count, suf = el.dataset.suffix || '';
+    if (reduce) { el.textContent = to + suf; return; }
+    const t0 = performance.now() + 250, dur = 1100;
+    const step = t => {
+      const p = Math.max(0, Math.min(1, (t - t0) / dur)), e = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(to * e) + suf;
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    root.querySelectorAll('.ring .fg').forEach(c => (c.style.strokeDashoffset = c.dataset.off));
+  }));
+}
+
+const routeId = () => (MENU.some(x => x.id === location.hash.slice(1)) ? location.hash.slice(1) : 'today');
+
+function renderView(id) {
+  const item = MENU.find(x => x.id === id);
+  return id === 'today' ? viewToday() : id === 'archive' ? viewArchive() : id === 'money' ? viewMoney()
+    : id === 'fixed' ? viewFixed() : id === 'chat' ? viewChat() : viewSoon(item);
+}
+
+// mode: enter(등장 애니메이션) | update(제자리 갱신) | route(화면 전환)
+function paint(mode = 'enter') {
+  const id = routeId();
+  const item = MENU.find(x => x.id === id);
+  const run = still => {
+    const sy = scrollY;
+    const rows = [...$view.querySelectorAll('.qrow')].map(r => r.scrollLeft);
+    UI.still = still;
+    $view.classList.toggle('still', still);
+    $view.classList.remove('leave');
+    $view.innerHTML = renderView(id);
+    UI.view = id;
+    $composer.hidden = id !== 'chat';
+    $fab.hidden = id === 'chat';
+    document.title = id === 'today' ? '일상 매니저' : `${item.name} · 일상 매니저`;
+    document.querySelectorAll('.menu nav a').forEach(a => (a.dataset.id === id ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current')));
+    if (still) {
+      scrollTo(0, sy);
+      $view.querySelectorAll('.qrow').forEach((r, i) => { if (rows[i] != null) r.scrollLeft = rows[i]; });
+    } else countUp($view);
+    UI.still = false;
+    paintHud();
+    if (id === 'chat' && (!still || UI.pending)) chatToBottom();
+  };
+  if (mode === 'route' && UI.view && !reduce) {
+    $view.classList.add('leave');
+    setTimeout(() => { run(false); scrollTo(0, 0); }, 220);
+  } else run(mode === 'update');
+}
+
+let pendingRefresh = false;
+function refresh(forceEnter) {
+  if (pendingRefresh) return;
+  pendingRefresh = true;
+  requestAnimationFrame(() => {
+    pendingRefresh = false;
+    if (forceEnter || (!UI.dataPainted && ready())) { if (ready()) UI.dataPainted = true; paint('enter'); }
+    else paint('update');
+  });
+}
+
+function paintHud() {
+  const xp = totalXp();
+  const lv = Math.floor(xp / XP_PER_LEVEL) + 1, into = xp % XP_PER_LEVEL;
+  document.getElementById('lvNum').textContent = lv;
+  document.getElementById('lvLabel').textContent = `LV.${lv}`;
+  document.getElementById('xpText').textContent = `${into} / ${XP_PER_LEVEL} XP`;
+  document.getElementById('streak').textContent = streak();
+  requestAnimationFrame(() => (document.getElementById('xpFill').style.width = `${(into / XP_PER_LEVEL) * 100}%`));
+}
+
+function toast(text) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.setAttribute('role', 'status');
+  t.textContent = text;
+  document.body.append(t);
+  setTimeout(() => t.remove(), 2700);
+}
+
+function celebrate(el, xp) {
+  const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+  window.FX?.burst(x, y, 22);
+  const f = document.createElement('div');
+  f.className = 'xp-float';
+  f.textContent = `+${xp} XP`;
+  f.style.left = `${x}px`;
+  f.style.top = `${y - 16}px`;
+  document.body.append(f);
+  setTimeout(() => f.remove(), 1000);
+}
+
+/* ---------- 할 일 바꾸기 ---------- */
+async function setTodo(date, id, patch) {
+  const todos = clone(todosOf(date));
+  const t = todos.find(x => x.id === id);
+  if (!t) return;
+  Object.assign(t, patch);
+  return putDay(date, todos);
+}
+
+async function toggleDone(card) {
+  const date = card.dataset.date, id = card.dataset.id;
+  const t = todosOf(date).find(x => x.id === id);
+  if (!t) return;
+  if (date > TODAY) { toast('그날이 되면 체크할 수 있어요'); return; }
+  if (isFailed(t, date)) return;
+  if (t.kind === 'thanks') { openTask(date, id); return; }
+  const done = !t.done;
+  if (done) celebrate(card.querySelector('.q-check') || card, xpOfTask(t));
+  const saving = setTodo(date, id, { done });
+  if (done) requestAnimationFrame(() => requestAnimationFrame(() =>
+    $view.querySelector(`.qcard[data-id="${CSS.escape(id)}"][data-date="${date}"]`)?.classList.add('just')));
+  try { await saving; } catch (e) { saveFail(); }
+}
+
+/* ---------- 상세 시트 ---------- */
+const $sheet = document.getElementById('sheet');
+const $sheetBody = document.getElementById('sheetBody');
+let sheetTick = null;
+function openSheet(html, mount) {
+  $sheetBody.innerHTML = `<div class="grip" aria-hidden="true"></div>${html}`;
+  $sheet.classList.add('open');
+  $sheet.inert = false;
+  document.documentElement.style.overflow = 'hidden';
+  mount?.($sheetBody);
+  setTimeout(() => $sheetBody.querySelector('input:not(:disabled), textarea:not(:disabled), button')?.focus({ preventScroll: true }), 300);
+}
+function closeSheet() {
+  $sheet.classList.remove('open');
+  $sheet.inert = true;
+  document.documentElement.style.overflow = '';
+  clearInterval(sheetTick);
+}
+$sheet.querySelector('.scrim').addEventListener('click', closeSheet);
+
+const sheetHead = (t, date, i) => `<div class="sh-head" style="--c:${PAL[i % PAL.length]}">
+  <span class="q-icon"><span class="emoji" aria-hidden="true">${esc(t.emoji || '📌')}</span></span>
+  <div><h3>${esc(t.title)}</h3><p class="num">${dotDate(date)} ${dowOf(date)}${t.minutes ? ` · ${fmtMin(t.minutes)}` : ''}</p></div>
+</div>`;
+
+function openTask(date, id) {
+  const todos = todosOf(date), i = todos.findIndex(x => x.id === id), t = todos[i];
+  if (!t) return;
+  if (t.kind === 'thanks') return thanksSheet(date, t, i);
+  if (t.kind === 'dev') return devSheet(date, t, i);
+  if (t.kind === 'workout') return workoutSheet(date, t, i);
+}
+
+function thanksSheet(date, t, i) {
+  const failed = isFailed(t, date), open = date === TODAY, items = t.items || [];
+  const banner = failed ? '<div class="banner fail">자정이 지나 탈락했어요</div>'
+    : t.done && !open ? '<div class="banner ok">다 적은 날이에요</div>'
+    : date > TODAY ? '<div class="banner due">그날이 되면 적을 수 있어요</div>'
+    : `<div class="banner due" data-due>자정까지 ${untilMidnight()} 남았어요 · 지나면 탈락</div>`;
+  openSheet(`${sheetHead({ ...t, title: '감사한 점 3가지' }, date, i)}${banner}
+    <div class="sh-sec">${[0, 1, 2].map(n => `
+      <label class="lined"><b>${n + 1}</b><input class="field" id="thx${n}" maxlength="140" value="${esc(items[n] || '')}" ${open ? '' : 'disabled'} placeholder="${open ? '오늘 고마웠던 일' : ''}"></label>`).join('')}
+    </div>
+    ${open ? '<button class="btn" id="thxSave">저장</button>' : '<button class="btn ghost" id="thxClose">닫기</button>'}`, body => {
+    sheetTick = setInterval(() => {
+      const el = body.querySelector('[data-due]');
+      if (el) el.textContent = `자정까지 ${untilMidnight()} 남았어요 · 지나면 탈락`;
+    }, 30000);
+    body.querySelector('#thxClose')?.addEventListener('click', closeSheet);
+    body.querySelector('#thxSave')?.addEventListener('click', async e => {
+      if (keyOf(new Date()) !== date) { toast('자정이 지나 저장할 수 없어요'); closeSheet(); return; }
+      const vals = [0, 1, 2].map(n => body.querySelector(`#thx${n}`).value.trim());
+      const done = vals.every(Boolean);
+      const was = t.done;
+      try {
+        if (done && !was) celebrate(e.currentTarget, xpOfTask(t));
+        await setTodo(date, t.id, { items: vals, done });
+        toast(done ? '감사한 점을 다 적었어요' : `${vals.filter(Boolean).length}/3 저장했어요`);
+        closeSheet();
+      } catch (err) { saveFail(); }
+    });
+  });
+}
+
+function doneButton(date, t) {
+  if (date > TODAY) return '';
+  return `<button class="btn ghost" id="doneToggle">${t.done ? '완료 취소' : '완료로 표시'}</button>`;
+}
+
+function devSheet(date, t, i) {
+  openSheet(`${sheetHead(t, date, i)}
+    <div class="sh-sec"><span class="label">무엇을 할지</span>
+      <textarea class="area" id="devNote" maxlength="600" placeholder="예: 저장소 화면에 월별 그래프 넣기">${esc(t.note || '')}</textarea></div>
+    <div class="${date > TODAY ? '' : 'btn-row'}">${doneButton(date, t)}<button class="btn" id="devSave">저장</button></div>`, body => {
+    let done = !!t.done;
+    body.querySelector('#doneToggle')?.addEventListener('click', e => {
+      done = !done;
+      e.currentTarget.textContent = done ? '완료 취소' : '완료로 표시';
+      if (done) celebrate(e.currentTarget, xpOfTask(t));
+    });
+    body.querySelector('#devSave').addEventListener('click', async () => {
+      try {
+        await setTodo(date, t.id, { note: body.querySelector('#devNote').value.trim(), done });
+        toast('저장했어요');
+        closeSheet();
+      } catch (e) { saveFail(); }
+    });
+  });
+}
+
+function partsHTML(name, current) {
+  const opts = PARTS.includes(current) ? PARTS : [...PARTS, current];
+  return `<div class="parts" data-parts="${name}">${opts.map(p => `<button class="pchip" data-part="${esc(p)}" aria-pressed="${p === current}">${esc(p)}</button>`).join('')}</div>`;
+}
+
+function workoutSheet(date, t, i) {
+  const tk = shiftKey(date, 1);
+  const split = { ...S.split };
+  const relName = date === TODAY ? '오늘' : dotDate(date);
+  const showTomorrow = date >= TODAY;
+  openSheet(`${sheetHead(t, date, i)}
+    <div class="sh-sec"><span class="label">${relName} 부위</span>${partsHTML('a', partOf(date))}
+      <textarea class="area" id="planA" maxlength="600" placeholder="예: 벤치프레스 5세트, 딥스 3세트">${esc(S.workout[date]?.plan || '')}</textarea></div>
+    ${showTomorrow ? `<div class="sh-sec"><span class="label">다음 날 루틴 · ${dotDate(tk)} ${dowOf(tk)}</span>${partsHTML('b', partOf(tk))}
+      <textarea class="area" id="planB" maxlength="600" placeholder="다음 날 할 운동">${esc(S.workout[tk]?.plan || '')}</textarea></div>` : ''}
+    <div class="sh-sec"><span class="label">주간 루틴 · 눌러서 바꾸기</span>
+      <div class="week7">${[1, 2, 3, 4, 5, 6, 0].map(d => `<button data-wd="${d}" class="${parseKey(TODAY).getDay() === d ? 'today' : ''}">${DAY[d]}<b>${esc(split[d])}</b></button>`).join('')}</div></div>
+    <div class="${date > TODAY ? '' : 'btn-row'}">${doneButton(date, t)}<button class="btn" id="woSave">저장</button></div>`, body => {
+    let done = !!t.done, splitChanged = false;
+    const pick = { a: partOf(date), b: partOf(tk) };
+    body.querySelectorAll('[data-parts]').forEach(group => group.addEventListener('click', e => {
+      const b = e.target.closest('[data-part]');
+      if (!b) return;
+      pick[group.dataset.parts] = b.dataset.part;
+      group.querySelectorAll('[data-part]').forEach(x => x.setAttribute('aria-pressed', x === b));
+    }));
+    body.querySelectorAll('[data-wd]').forEach(b => b.addEventListener('click', () => {
+      const d = b.dataset.wd, n = (PARTS.indexOf(split[d]) + 1) % PARTS.length;
+      split[d] = PARTS[n];
+      b.querySelector('b').textContent = split[d];
+      splitChanged = true;
+    }));
+    body.querySelector('#doneToggle')?.addEventListener('click', e => {
+      done = !done;
+      e.currentTarget.textContent = done ? '완료 취소' : '완료로 표시';
+      if (done) celebrate(e.currentTarget, xpOfTask(t));
+    });
+    body.querySelector('#woSave').addEventListener('click', async () => {
+      try {
+        if (splitChanged) await putSplit(split);
+        await putWorkout(date, { part: pick.a, plan: body.querySelector('#planA').value.trim() });
+        if (showTomorrow) await putWorkout(tk, { part: pick.b, plan: body.querySelector('#planB').value.trim() });
+        if (done !== !!t.done) await setTodo(date, t.id, { done });
+        toast('운동 루틴을 저장했어요');
+        closeSheet();
+      } catch (e) { saveFail(); }
+    });
+  });
+}
+
+function balanceSheet(bankId) {
+  const b = BANKS.find(x => x.id === bankId), v = S.money.balances[bankId];
+  openSheet(`<div class="sh-head"><span class="q-icon" style="--c:${b.color}"><b style="color:#0d0a22; font-size:18px">${b.short}</b></span>
+      <div><h3>${b.name}</h3><p>잔액</p></div></div>
+    <div class="numfield"><input class="field" id="balIn" inputmode="numeric" placeholder="0" value="${v == null ? '' : v}"><span>원</span></div>
+    <button class="btn" id="balSave">저장</button>`, body => {
+    const input = body.querySelector('#balIn');
+    input.addEventListener('input', () => { input.value = input.value.replace(/[^\d]/g, ''); });
+    body.querySelector('#balSave').addEventListener('click', async () => {
+      const raw = input.value.trim();
+      const money = clone(S.money);
+      money.balances[bankId] = raw === '' ? null : Number(raw);
+      try { await putMoney(money); toast(`${b.name} 잔액을 저장했어요`); closeSheet(); } catch (e) { saveFail(); }
+    });
+  });
+}
+
+/* ---------- 화면 안 클릭 ---------- */
+$view.addEventListener('click', e => {
+  const go = e.target.closest('[data-go]');
+  if (go) { location.hash = `#${go.dataset.go}`; return; }
+  const shift = e.target.closest('[data-shift]');
+  if (shift) {
+    const n = +shift.dataset.shift, home = shift.dataset.scope === 'home';
+    const [ky, km] = home ? ['y', 'm'] : ['ay', 'am'];
+    UI[km] += n;
+    if (UI[km] < 0) { UI[km] = 11; UI[ky]--; }
+    if (UI[km] > 11) { UI[km] = 0; UI[ky]++; }
+    if (home) {
+      document.getElementById('calHead').innerHTML = calHeadHTML();
+      document.getElementById('cal').innerHTML = calHTML(UI.y, UI.m, UI.sel, true);
+    } else paint('enter');
+    return;
+  }
+  const day = e.target.closest('.mcal [data-k]');
+  if (day) {
+    if (UI.sel === day.dataset.k) return;
+    UI.sel = day.dataset.k;
+    $view.querySelectorAll('.mcal [data-k]').forEach(x => x.setAttribute('aria-pressed', x.dataset.k === UI.sel));
+    const area = document.getElementById('dayArea');
+    area.innerHTML = dayAreaHTML();
+    countUp(area);
+    return;
+  }
+  const check = e.target.closest('[data-check]');
+  if (check) { e.stopPropagation(); if (!check.disabled) toggleDone(check.closest('.qcard')); return; }
+  const card = e.target.closest('.qcard');
+  if (card) {
+    const t = todosOf(card.dataset.date).find(x => x.id === card.dataset.id);
+    if (!t) return;
+    if (['thanks', 'dev', 'workout'].includes(t.kind)) openTask(card.dataset.date, t.id);
+    else toggleDone(card);
+    return;
+  }
+  const acct = e.target.closest('[data-acct]');
+  if (acct) { balanceSheet(acct.dataset.acct); return; }
+  const undo = e.target.closest('[data-undo]');
+  if (undo) { undoTurn(undo.dataset.undo); }
+});
+$view.addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('qcard')) { e.preventDefault(); e.target.click(); }
+});
+
+/* ---------- 매니저 대화 ---------- */
+function chatToBottom() { requestAnimationFrame(() => scrollTo({ top: document.body.scrollHeight, behavior: reduce ? 'auto' : 'smooth' })); }
+const slim = t => {
+  const o = { id: t.id, title: t.title, done: !!t.done };
+  for (const k of ['kind', 'minutes', 'amount', 'note', 'emoji']) if (t[k]) o[k] = t[k];
+  if (t.kind === 'thanks') o.items = (t.items || []).filter(Boolean);
+  return o;
+};
+
+function instructions() {
+  const tk = shiftKey(TODAY, 1);
+  const hm = `${pad(NOW.getHours())}:${pad(NOW.getMinutes())}`;
+  const split = [1, 2, 3, 4, 5, 6, 0].map(d => `${DAY[d]} ${S.split[d]}`).join(', ');
+  const bal = BANKS.map(b => `${b.name} ${S.money.balances[b.id] == null ? '미입력' : won(S.money.balances[b.id])}`).join(', ');
+  return `너는 '일상 매니저' 앱 안에 있는 매니저야. 사용자가 넣으라는 곳에 기록을 넣고 고치는 일만 해.
+규칙:
+- 한국어로 짧고 친근하게 답해. 무엇을 어디에 넣었는지 한 줄로 알려줘.
+- 기록을 바꿀 때는 반드시 도구를 써. 도구가 성공하지 않았으면 했다고 말하지 마.
+- 사용자가 말하지 않은 내용을 지어내지 마. 날짜나 양이 애매하면 넣기 전에 물어봐.
+- '오늘', '내일', '토요일' 같은 말은 아래 날짜를 기준으로 YYYY-MM-DD로 바꿔.
+- 시간이 걸리는 할 일은 minutes(분)에, 개수 같은 양은 amount에 넣어. 사이트 개발은 kind "dev", 운동은 kind "workout", 감사한 점 3개는 kind "thanks".
+- 감사한 점은 그날 자정 전까지만 적을 수 있고, 지나면 탈락이야.
+- 앱 화면이나 기능을 고치는 일은 네 일이 아니야. 그런 요청이면 코딩은 대화 밖 개발 세션에서 한다고 알려줘.
+
+지금: ${TODAY} ${DAY[NOW.getDay()]}요일 ${hm}
+오늘(${TODAY}) 할 일: ${JSON.stringify(todosOf(TODAY).map(slim))}
+내일(${tk}) 할 일: ${JSON.stringify(todosOf(tk).map(slim))}
+오늘 운동 부위: ${partOf(TODAY)}, 내일 운동 부위: ${partOf(tk)}
+주간 운동 루틴: ${split}
+돈: 월급날 매달 ${S.money.payday}일, 적금 ${manwon(S.money.savings)} 자동이체, 한 달 쓸 수 있는 돈 ${manwon(S.money.spend)}, 잔액 ${bal}`;
+}
+
+function makeTools(before, acts) {
+  const keep = (path, val) => { if (!(path in before)) before[path] = clone(val ?? null); };
+  const needDate = d => { if (!isDate(d)) throw new Error('date는 YYYY-MM-DD 형식이어야 해요'); return String(d); };
+  const findTodo = (date, id) => {
+    const t = todosOf(date).find(x => x.id === String(id));
+    if (!t) throw new Error(`${date}에 id ${id} 할 일이 없어요. get_day로 먼저 확인하세요`);
+    return t;
+  };
+  const dayNote = d => `${dotDate(d)}`;
+  const dayPath = d => `days/${d}`;
+  return [
+    {
+      name: 'get_day',
+      description: 'Returns the to-dos (with ids) and the workout part/plan for one date (YYYY-MM-DD).',
+      inputSchema: { type: 'object', properties: { date: { type: 'string' } }, required: ['date'] },
+      execute: ({ date }) => { const d = needDate(date); return { date: d, todos: todosOf(d).map(slim), workout: { part: partOf(d), plan: S.workout[d]?.plan || '' } }; },
+    },
+    {
+      name: 'add_todo',
+      description: 'Adds a to-do to a date. kind: normal (default), dev (site development; note = what to work on), workout, thanks (write 3 gratitudes; one per day). minutes for time-based tasks, amount for other quantities such as "3개". Returns the new id.',
+      inputSchema: { type: 'object', properties: {
+        date: { type: 'string' }, title: { type: 'string' }, emoji: { type: 'string', description: 'one emoji' },
+        minutes: { type: 'number' }, amount: { type: 'string' }, kind: { type: 'string', enum: ['normal', 'dev', 'workout', 'thanks'] }, note: { type: 'string' },
+      }, required: ['date', 'title'] },
+      execute: async input => {
+        const d = needDate(input.date);
+        const title = String(input.title || '').trim().slice(0, 40);
+        if (!title) throw new Error('title이 비어 있어요');
+        const kind = ['dev', 'workout', 'thanks'].includes(input.kind) ? input.kind : undefined;
+        if (kind === 'thanks' && todosOf(d).some(t => t.kind === 'thanks')) throw new Error('그날에는 이미 감사한 점 할 일이 있어요');
+        const t = { id: newId(), emoji: String(input.emoji || (kind === 'dev' ? '💻' : kind === 'workout' ? '💪' : kind === 'thanks' ? '💌' : '📌')).slice(0, 8), title, done: false };
+        if (kind) t.kind = kind;
+        if (Number(input.minutes) > 0) t.minutes = Math.round(Number(input.minutes));
+        if (input.amount) t.amount = String(input.amount).slice(0, 20);
+        else if (kind === 'thanks') t.amount = '3개';
+        if (input.note) t.note = String(input.note).slice(0, 600);
+        if (kind === 'thanks') t.items = [];
+        keep(dayPath(d), S.days[d]?.todos);
+        await putDay(d, [...clone(todosOf(d)), t]);
+        acts.push(`${dayNote(d)} 할 일 추가: ${title}`);
+        return { ok: true, id: t.id };
+      },
+    },
+    {
+      name: 'update_todo',
+      description: 'Changes fields of an existing to-do by id: done, title, minutes, amount, note, emoji. A gratitude (thanks) to-do is completed only by set_thanks.',
+      inputSchema: { type: 'object', properties: {
+        date: { type: 'string' }, id: { type: 'string' }, done: { type: 'boolean' }, title: { type: 'string' },
+        minutes: { type: 'number' }, amount: { type: 'string' }, note: { type: 'string' }, emoji: { type: 'string' },
+      }, required: ['date', 'id'] },
+      execute: async input => {
+        const d = needDate(input.date), t = findTodo(d, input.id);
+        const patch = {};
+        if (typeof input.done === 'boolean') {
+          if (t.kind === 'thanks') throw new Error('감사한 점은 set_thanks로 3개를 적어야 완료돼요');
+          if (input.done && d > TODAY) throw new Error('아직 오지 않은 날은 완료로 표시할 수 없어요');
+          patch.done = input.done;
+        }
+        if (input.title) patch.title = String(input.title).slice(0, 40);
+        if (input.minutes != null) patch.minutes = Math.max(0, Math.round(Number(input.minutes) || 0)) || undefined;
+        if (input.amount != null) patch.amount = String(input.amount).slice(0, 20) || undefined;
+        if (input.note != null) patch.note = String(input.note).slice(0, 600);
+        if (input.emoji) patch.emoji = String(input.emoji).slice(0, 8);
+        keep(dayPath(d), S.days[d]?.todos);
+        const todos = clone(todosOf(d));
+        const target = todos.find(x => x.id === t.id);
+        Object.assign(target, patch);
+        for (const k of Object.keys(target)) if (target[k] === undefined) delete target[k];
+        await putDay(d, todos);
+        acts.push(`${dayNote(d)} ${t.title}${patch.done === true ? ' 완료' : patch.done === false ? ' 완료 취소' : ' 수정'}`);
+        return { ok: true };
+      },
+    },
+    {
+      name: 'remove_todo',
+      description: 'Removes a to-do by id from a date. Only when the user clearly asks to delete it.',
+      inputSchema: { type: 'object', properties: { date: { type: 'string' }, id: { type: 'string' } }, required: ['date', 'id'] },
+      execute: async input => {
+        const d = needDate(input.date), t = findTodo(d, input.id);
+        keep(dayPath(d), S.days[d]?.todos);
+        const left = todosOf(d).filter(x => x.id !== t.id);
+        await putDay(d, left.length ? clone(left) : null);
+        acts.push(`${dayNote(d)} 할 일 삭제: ${t.title}`);
+        return { ok: true };
+      },
+    },
+    {
+      name: 'set_thanks',
+      description: 'Saves up to 3 gratitude entries for TODAY only (past or future dates are refused). The thanks to-do is done when all 3 are filled.',
+      inputSchema: { type: 'object', properties: { date: { type: 'string' }, items: { type: 'array', items: { type: 'string' }, maxItems: 3 } }, required: ['date', 'items'] },
+      execute: async input => {
+        const d = needDate(input.date);
+        if (d !== keyOf(new Date())) throw new Error('감사한 점은 그날(오늘)에만 적을 수 있어요');
+        const items = [0, 1, 2].map(n => String((input.items || [])[n] || '').trim().slice(0, 140));
+        keep(dayPath(d), S.days[d]?.todos);
+        let todos = clone(todosOf(d));
+        let t = todos.find(x => x.kind === 'thanks');
+        if (!t) { t = { id: newId(), emoji: '💌', title: '감사한 점 적기', amount: '3개', kind: 'thanks', done: false }; todos.push(t); }
+        t.items = items;
+        t.done = items.every(Boolean);
+        await putDay(d, todos);
+        acts.push(`${dayNote(d)} 감사한 점 ${items.filter(Boolean).length}/3`);
+        return { ok: true, done: t.done };
+      },
+    },
+    {
+      name: 'set_workout',
+      description: 'Sets the body part (등, 가슴, 하체, 휴식 or another short word) and/or the exercise plan text for a date.',
+      inputSchema: { type: 'object', properties: { date: { type: 'string' }, part: { type: 'string' }, plan: { type: 'string' } }, required: ['date'] },
+      execute: async input => {
+        const d = needDate(input.date);
+        keep(`workout/${d}`, S.workout[d]);
+        const cur = { part: partOf(d), plan: S.workout[d]?.plan || '' };
+        if (input.part) cur.part = String(input.part).slice(0, 10);
+        if (input.plan != null) cur.plan = String(input.plan).slice(0, 600);
+        await putWorkout(d, cur);
+        acts.push(`${dayNote(d)} 운동: ${cur.part}`);
+        return { ok: true };
+      },
+    },
+    {
+      name: 'set_weekly_split',
+      description: 'Sets the weekly workout part for one weekday. weekday: 0=일, 1=월, 2=화, 3=수, 4=목, 5=금, 6=토.',
+      inputSchema: { type: 'object', properties: { weekday: { type: 'number' }, part: { type: 'string' } }, required: ['weekday', 'part'] },
+      execute: async input => {
+        const wd = Number(input.weekday);
+        if (!(wd >= 0 && wd <= 6)) throw new Error('weekday는 0~6이에요');
+        keep('settings/main', { split: S.split });
+        const split = { ...S.split, [wd]: String(input.part).slice(0, 10) };
+        await putSplit(split);
+        acts.push(`주간 루틴 ${DAY[wd]}: ${split[wd]}`);
+        return { ok: true };
+      },
+    },
+    {
+      name: 'set_balance',
+      description: 'Sets the current balance in won for one bank account: 농협, 카카오뱅크 or 신한.',
+      inputSchema: { type: 'object', properties: { bank: { type: 'string', enum: BANKS.map(b => b.name) }, amount: { type: 'number' } }, required: ['bank', 'amount'] },
+      execute: async input => {
+        const b = BANKS.find(x => x.name === input.bank || x.id === input.bank);
+        if (!b) throw new Error('은행은 농협, 카카오뱅크, 신한 중 하나예요');
+        const amt = Math.round(Number(input.amount));
+        if (!Number.isFinite(amt)) throw new Error('amount는 원 단위 숫자예요');
+        keep('money/main', S.money);
+        const money = clone(S.money);
+        money.balances[b.id] = amt;
+        await putMoney(money);
+        acts.push(`${b.name} 잔액 ${won(amt)}`);
+        return { ok: true };
+      },
+    },
+    {
+      name: 'set_money_plan',
+      description: 'Changes the payday (day of month), the monthly automatic savings, or the monthly spending budget, in won.',
+      inputSchema: { type: 'object', properties: { payday: { type: 'number' }, savings: { type: 'number' }, spend: { type: 'number' } } },
+      execute: async input => {
+        keep('money/main', S.money);
+        const money = clone(S.money);
+        if (input.payday != null) money.payday = Math.min(28, Math.max(1, Math.round(Number(input.payday))));
+        if (input.savings != null) money.savings = Math.max(0, Math.round(Number(input.savings)));
+        if (input.spend != null) money.spend = Math.max(0, Math.round(Number(input.spend)));
+        await putMoney(money);
+        acts.push('월급 계획 수정');
+        return { ok: true };
+      },
+    },
+  ];
+}
+
+async function undoTurn(at) {
+  const before = UI.undo[at];
+  if (!before) return;
+  try {
+    for (const [path, val] of Object.entries(before)) {
+      const [col, id] = path.split('/');
+      if (col === 'days') await putDay(id, val && val.length ? val : null);
+      else if (col === 'workout') await putWorkout(id, val ? { part: val.part, plan: val.plan || '' } : null);
+      else if (col === 'settings') await putSplit(val.split);
+      else if (col === 'money') await putMoney(val);
+    }
+    delete UI.undo[at];
+    toast('되돌렸어요');
+    refresh();
+  } catch (e) { saveFail(); }
+}
+
+const $input = document.getElementById('chatInput');
+const $send = document.getElementById('chatSend');
+const SEND_ICON = $send.innerHTML;
+const STOP_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="3" fill="currentColor"/></svg>';
+
+function setBusy(busy) {
+  $send.classList.toggle('stop', busy);
+  $send.innerHTML = busy ? STOP_ICON : SEND_ICON;
+  $send.setAttribute('aria-label', busy ? '멈추기' : '보내기');
+}
+
+function liveUpdate() {
+  const el = document.getElementById('liveBubble');
+  if (el && UI.pending?.text) el.textContent = UI.pending.text;
+  chatToBottom();
+}
+
+async function send() {
+  if (UI.pending) { UI.ctl?.abort(); return; }
+  const text = $input.value.trim();
+  if (!text) return;
+  if (!SAMPLE) { toast('이 화면에서는 매니저를 부를 수 없어요'); return; }
+  $input.value = '';
+  $input.style.height = '';
+  NOW = new Date();
+  const before = {}, acts = [];
+  UI.pending = { user: text, text: '', acts };
+  UI.ctl = new AbortController();
+  setBusy(true);
+  refresh();
+  const history = S.chat.slice(-12).map(m => ({ role: m.role, content: m.content }));
+  const turns = [{ role: 'user', content: instructions() }, ...history, { role: 'user', content: text }];
+  let answer = '', failed = '';
+  try {
+    let tools = makeTools(before, acts);
+    const lim = await SAMPLE.limits().catch(() => null);
+    if (lim && !lim.tools) tools = [];
+    else if (lim?.tools?.maxCount) tools = tools.slice(0, lim.tools.maxCount);
+    const res = await SAMPLE(turns, {
+      modelTier: 'quick',
+      signal: UI.ctl.signal,
+      ...(tools.length ? { tools } : { cache: false }),
+      onText: ({ text: t }) => { UI.pending.text = t; liveUpdate(); },
+    });
+    answer = res.text;
+  } catch (e) {
+    answer = e?.text || '';
+    failed = e?.code === 'cancelled' ? '멈췄어요.'
+      : e?.code === 'not_granted' ? '매니저를 쓰도록 허용해야 대화할 수 있어요.'
+      : e?.code === 'rate_limited' ? '지금은 너무 많이 불렀어요. 조금 뒤에 다시 말해 주세요.'
+      : e?.code === 'sampling_disabled' ? '이 계정에서는 매니저를 부를 수 없어요.'
+      : '답을 받지 못했어요. 다시 말해 주세요.';
+  }
+  const at = new Date().toISOString();
+  const reply = [answer.trim(), failed].filter(Boolean).join('\n');
+  if (Object.keys(before).length) UI.undo[at] = before;
+  const messages = [...S.chat, { role: 'user', content: text, at: `${at}u` }, { role: 'assistant', content: reply || '…', at, actions: acts }];
+  UI.pending = null;
+  UI.ctl = null;
+  setBusy(false);
+  await putChat(messages);
+  refresh();
+}
+
+document.getElementById('chatForm').addEventListener('submit', e => { e.preventDefault(); send(); });
+$input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
+});
+$input.addEventListener('input', () => { $input.style.height = ''; $input.style.height = `${Math.min(140, $input.scrollHeight)}px`; });
+
+/* ---------- 메뉴 ---------- */
+function setupMenu() {
+  const menu = document.getElementById('menu'), btn = document.getElementById('menuBtn');
+  menu.querySelector('nav').innerHTML = MENU.map((x, i) => `
+    <a href="#${x.id}" data-id="${x.id}" style="--i:${i}">
+      <span class="m-icon"><span class="emoji" aria-hidden="true">${x.emoji}</span></span>${x.name}
+      <svg class="m-go" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>`).join('');
+  const set = open => {
+    if (open) {
+      const r = btn.getBoundingClientRect();
+      menu.style.setProperty('--ox', `${r.left + r.width / 2}px`);
+      menu.style.setProperty('--oy', `${r.top + r.height / 2}px`);
+    }
+    menu.classList.toggle('open', open);
+    menu.inert = !open;
+    btn.setAttribute('aria-expanded', open);
+    document.documentElement.style.overflow = open ? 'hidden' : '';
+    if (open) setTimeout(() => menu.querySelector('[aria-current="page"]')?.focus(), 200);
+  };
+  btn.onclick = () => set(true);
+  menu.querySelector('[data-close]').onclick = () => set(false);
+  menu.querySelectorAll('nav a').forEach(a => (a.onclick = () => set(false)));
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (menu.classList.contains('open')) set(false);
+    else if ($sheet.classList.contains('open')) closeSheet();
+  });
+}
+
+/* ---------- 시작 ---------- */
+setupMenu();
+$fab.addEventListener('click', () => { location.hash = '#chat'; });
+addEventListener('hashchange', () => { closeSheet(); paint('route'); });
+paint('enter');
+connect();
+
+// 날짜가 바뀌면(자정) 오늘을 새로 잡는다. 감사한 점은 이때 탈락으로 바뀐다
+setInterval(() => {
+  NOW = new Date();
+  const k = keyOf(NOW);
+  if (k !== TODAY) {
+    const wasToday = UI.sel === TODAY;
+    TODAY = k;
+    if (wasToday) { UI.sel = k; UI.y = NOW.getFullYear(); UI.m = NOW.getMonth(); }
+    if (!UI.pending) refresh();
+  }
+}, 30000);
+
+const boot = document.getElementById('boot');
+if (boot) {
+  try { sessionStorage.setItem('booted', '1'); } catch (e) { /* 저장이 막혀 있어도 그냥 넘어간다 */ }
+  boot.addEventListener('pointerdown', () => boot.classList.add('skip'));
+}

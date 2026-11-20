@@ -1,0 +1,17 @@
+{
+  "days/2026-11-20": { "date": "2026-11-20", "todos": [
+    { "id": "w20", "emoji": "💪", "title": "운동", "kind": "workout", "done": true },
+    { "id": "r20", "emoji": "✅", "title": "나머지 할 일", "amount": "모두 완료", "done": true },
+    { "id": "g20", "emoji": "💌", "title": "감사한 점 적기", "amount": "3개", "kind": "thanks", "items": [], "done": false }
+  ] },
+  "days/2026-11-21": { "date": "2026-11-21", "todos": [
+    { "id": "s21", "emoji": "😴", "title": "총기상 후 취침", "amount": "조금", "done": false },
+    { "id": "e21", "emoji": "⚡", "title": "전기 공부", "minutes": 120, "done": false },
+    { "id": "d21", "emoji": "💻", "title": "사이트 개발", "minutes": 120, "kind": "dev", "done": false },
+    { "id": "x21", "emoji": "💪", "title": "운동", "minutes": 180, "kind": "workout", "done": false },
+    { "id": "g21", "emoji": "💌", "title": "감사한 점 적기", "amount": "3개", "kind": "thanks", "items": [], "done": false },
+    { "id": "t21", "emoji": "🧘", "title": "스트레칭", "minutes": 10, "done": false }
+  ] },
+  "settings/main": { "split": { "0": "하체", "1": "등", "2": "가슴", "3": "하체", "4": "휴식", "5": "등", "6": "가슴" } },
+  "money/main": { "payday": 10, "savings": 550000, "spend": 650000, "balances": { "nh": null, "kakao": null, "shinhan": null } }
+}

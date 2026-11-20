@@ -1,31 +1,32 @@
 # 일상 매니저
 
-사용자의 하루를 기록하는 개인 사이트. Claude는 사용자의 **일상 매니저**로서, 사용자가 대화로 알려주는 할 일·결과·감사한 점을 `data/days.json`에 기록한다. 사이트는 이 파일을 읽어서 보여주기만 한다.
+사용자의 하루를 기록하는 개인 앱. Claude는 사용자의 **일상 매니저**다.
 
-## 사이트
-- GitHub Pages가 `claude/adoring-shannon-8ncj2s` 브랜치 루트를 배포한다: https://a01022354053-collab.github.io/routine-tracker/
-- 한 화면 앱(`index.html`). 주소 `#` 뒤 이름으로 화면을 바꾼다: `#today` 오늘 루틴(기본: 달력 + 고른 날의 할 일), `#archive` 저장소(달별 달성률, 날짜별 기록), `#money` 돈 관리, `#fixed` 고정 지출, `#items` 내 물건, `#shopping` 필요한 물건(뒤의 넷은 아직 빈 화면)
-- `assets/app.js` 화면·메뉴·계산, `assets/fx.js` 배경 애니메이션(별, 리본, 혜성, 탭 효과), `assets/style.css`, `manifest.webmanifest`(홈 화면에 앱으로 추가)
-- 디자인: 밤하늘 게임 월드. 남색 배경에 팝 네온색, 유리 패널, 숫자는 Unbounded, 한글은 Pretendard, 이모지는 Tossface. 화면에 군더더기 문구를 넣지 않는다.
-- 게임 요소: 끝낸 할 일은 걸린 분만큼 XP(시간 없으면 30), 결과만 기록된 날은 달성률만큼 XP. 500 XP마다 레벨 업. 🔥는 체크된 날의 연속 일수.
+## 어디서 돌아가나
+- 앱 본체는 Claude 아티팩트(비공개, 사용자만 열 수 있음): https://claude.ai/artifact/GAtreHbyjVG2J54DC15riv
+- GitHub Pages(`claude/adoring-shannon-8ncj2s` 브랜치 루트)의 `index.html`은 위 아티팩트로 넘겨주는 페이지일 뿐이다.
+- 기록은 아티팩트 저장소(db)에 있다. 사용자는 앱에서 직접 체크하고, 감사한 점·운동·잔액을 적고, 앱 안의 '매니저와 대화'로 기록을 넣는다. 이 저장소에서는 코딩만 한다.
+- 기록을 직접 읽거나 고칠 때는 `ArtifactData` 도구를 쓴다(사용자가 부탁할 때만).
 
-## 기록 형식 (`data/days.json`)
-```json
-{ "days": [
-  { "date": "2026-11-21", "checked": false,
-    "todos": [ { "emoji": "⚡", "title": "전기 공부", "minutes": 120, "done": false },
-               { "emoji": "💌", "title": "감사한 점 적기", "amount": "3개", "done": false } ],
-    "thanks": [] },
-  { "date": "2026-11-20", "checked": true, "rate": 100, "memo": "할 일 모두 완료", "todos": [], "thanks": [] }
-] }
-```
-- `todos`: 할 일. `emoji`는 Tossface에 있는 이모지 하나, `title`은 짧게. 시간은 `minutes`(분, 숫자)로 적으면 화면에 시간과 시간 배분 막대가 나온다. 시간이 아닌 양(3개, 조금)은 `amount`.
-- `checked`: 그날 결과를 사용자에게 확인받았으면 `true`. 달성률 계산에는 체크된 날만 들어간다.
-- `rate`, `memo`: 할 일 목록 없이 결과만 들었을 때(예: "오늘 다 했어") 쓴다. 목록이 있으면 달성률은 `done` 비율로 계산한다.
-- `thanks`: 사용자가 적어준 그날의 감사한 점(보통 3개).
+## 코드
+- `app/index.html` 아티팩트 본문(doctype/head/body 없이 쓴다). `app/assets/app.js` 화면·저장·매니저 도구, `app/assets/fx.js` 배경 애니메이션, `app/assets/style.css`.
+- 글꼴은 `tools/fetch-fonts.sh`로 `app/fonts/`에 받는다(저장소에 넣지 않음). 아티팩트에는 이미 올라가 있어서, 코드만 고쳤으면 바뀐 파일만 `files`로 다시 올리면 된다.
+- 다시 올리기: Artifact 도구로 `file_path: app/index.html`, `url`은 위 주소, 바뀐 파일만 `files`에 (예: `{"assets/app.js": "app/assets/app.js"}`). `capabilities`는 생략해서 그대로 둔다.
+- 화면: `#today` 오늘 루틴(달력 + 고른 날의 할 일 카드, 가로로 넘김) · `#archive` 저장소(달별 달성률, 날짜별 기록) · `#chat` 매니저와 대화 · `#money` 돈 관리 · `#fixed` 고정 지출 · `#items` 내 물건 · `#shopping` 필요한 물건(마지막 둘은 빈 화면). 컴퓨터(960px 이상)에서는 두 칸으로 넓게.
+- 디자인: 밤하늘 게임 월드. 남색 배경, 팝 네온, 유리 패널, 숫자는 Unbounded, 한글은 Pretendard, 이모지는 Tossface. 군더더기 문구를 넣지 않는다.
 
-## 기록 규칙
-- 할 일을 받으면 그 날짜 항목을 만들고 `checked: false`, 모든 `done: false`로 둔다.
-- 결과를 들으면 `done`을 표시하고 `checked: true`로 바꾼다. 금요일은 폰을 내기 때문에 결과가 다음 날 들어올 수 있다.
-- 한 달 달성률은 체크된 날들의 하루 달성률 평균이다 (`assets/app.js`의 `monthStats`).
-- 날짜 오름차순을 지키고, JSON이 올바른지 확인한 뒤 커밋·푸시한다.
+## 저장소(db) 구조 — 규칙: 소유자만 읽고 쓴다
+- `days/<YYYY-MM-DD>`: `{ date, todos: [{ id, emoji, title, minutes?, amount?, done, kind?, note?, items? }] }`
+  - `kind`: 없음(일반) · `dev`(사이트 개발, `note`=무엇을 할지) · `workout`(운동, 부위는 `workout/`에서) · `thanks`(감사한 점 3개, `items`)
+- `workout/<YYYY-MM-DD>`: `{ date, part, plan }` — 없으면 주간 루틴의 그 요일 부위
+- `settings/main`: `{ split: { "0": "하체", "1": "등", "2": "가슴", "3": "하체", "4": "휴식", "5": "등", "6": "가슴" } }` (0=일요일)
+- `money/main`: `{ payday: 10, savings: 550000, spend: 650000, balances: { nh, kakao, shinhan } }`
+- `chat/log`: `{ messages: [...] }` 최근 60개
+- 처음 넣은 기록은 `tools/seed.json`
+
+## 규칙
+- 감사한 점은 그날 자정 전까지만 적을 수 있고, 지나면 '탈락'으로 보인다. 다른 할 일은 지난 날도 체크할 수 있다(금요일은 폰을 내서 다음 날 체크).
+- 달성률: 하루는 완료 비율, 한 달은 오늘까지 할 일이 있던 날들의 평균.
+- XP: 끝낸 할 일은 걸린 분만큼(시간 없으면 30). 500 XP마다 레벨 업. 🔥는 연속 ALL CLEAR 일수.
+- 돈: 월급날 매달 10일, 적금 55만원 자동이체, 실제로 쓰는 돈은 한 달 65만원. 통장은 농협, 카카오뱅크, 신한.
+- 운동 루틴(체단): 금 등, 토 가슴, 일 하체, 월 등, 화 가슴, 수 하체, 목 휴식.

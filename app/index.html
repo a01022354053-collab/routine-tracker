@@ -1,0 +1,78 @@
+<title>일상 매니저</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;600;700;800;900&display=swap">
+<link rel="stylesheet" href="fonts/tossface/tossface.css">
+<link rel="stylesheet" href="assets/style.css">
+<script>try { if (sessionStorage.getItem('booted')) document.documentElement.classList.add('no-boot'); } catch (e) {}</script>
+
+<canvas id="sky" aria-hidden="true"></canvas>
+<div class="grain" aria-hidden="true"></div>
+
+<div class="app">
+  <header class="hud">
+    <div class="hud-in">
+      <button class="menu-btn" id="menuBtn" aria-label="메뉴 열기" aria-controls="menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6.5h16" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M4 12h16" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M4 17.5h16" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+      </button>
+      <div class="lv">
+        <div class="lv-badge">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="#ffe81a"/></svg>
+          <b id="lvNum">1</b>
+        </div>
+        <div class="lv-info">
+          <div class="lv-row"><b id="lvLabel">LV.1</b><span id="xpText" class="num">0 / 500 XP</span></div>
+          <div class="xpbar"><i id="xpFill"></i></div>
+        </div>
+      </div>
+      <div class="streak" role="img" aria-label="연속 올클리어"><span class="emoji" aria-hidden="true">🔥</span><span id="streak">0</span></div>
+    </div>
+  </header>
+  <main id="view"></main>
+</div>
+
+<button class="fab" id="fab" aria-label="매니저와 대화">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>
+</button>
+
+<div class="composer" id="composer" hidden>
+  <form id="chatForm">
+    <textarea class="field" id="chatInput" rows="1" maxlength="1000" placeholder="매니저에게 말하기" aria-label="매니저에게 보낼 말"></textarea>
+    <button class="send" id="chatSend" type="submit" aria-label="보내기">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </form>
+</div>
+
+<div class="sheet-wrap" id="sheet" inert>
+  <div class="scrim"></div>
+  <section class="sheet" id="sheetBody" role="dialog" aria-modal="true" aria-label="자세히"></section>
+</div>
+
+<div class="menu" id="menu" inert>
+  <div class="menu-bg"></div>
+  <div class="menu-in">
+    <div class="menu-top">
+      <span class="brand">일상 매니저</span>
+      <button class="menu-btn" data-close aria-label="메뉴 닫기">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <nav aria-label="메뉴"></nav>
+    <div class="marquee" aria-hidden="true">
+      <div>일상 매니저 <em>✦</em> DAILY MANAGER <em>✦</em> 일상 매니저 <em>✦</em> DAILY MANAGER <em>✦</em> 일상 매니저 <em>✦</em> DAILY MANAGER <em>✦</em> 일상 매니저 <em>✦</em> DAILY MANAGER <em>✦</em></div>
+    </div>
+  </div>
+</div>
+
+<canvas id="fx" aria-hidden="true"></canvas>
+
+<div class="boot" id="boot" aria-hidden="true">
+  <svg viewBox="0 0 24 24"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>
+  <div class="boot-title"><span style="--i:0">일</span><span style="--i:1">상</span><span style="--i:2"> </span><span style="--i:3">매</span><span style="--i:4">니</span><span style="--i:5">저</span></div>
+  <div class="boot-bar"><i></i></div>
+</div>
+
+<script src="assets/fx.js"></script>
+<script src="assets/app.js"></script>
