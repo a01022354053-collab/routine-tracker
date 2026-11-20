@@ -4,10 +4,10 @@
 
 ## 사이트
 - GitHub Pages가 `claude/adoring-shannon-8ncj2s` 브랜치 루트를 배포한다: https://a01022354053-collab.github.io/routine-tracker/
-- `index.html` 오늘 루틴(메인: 달력 + 고른 날의 할 일) · `archive.html` 저장소(달별 달성률, 날짜별 기록)
-- `money.html` 돈 관리 · `fixed.html` 고정 지출 · `items.html` 내 물건 · `shopping.html` 필요한 물건 — 아직 빈 화면
-- 이동은 왼쪽 위 3줄 메뉴. 메뉴 항목과 상단 바는 `assets/app.js`의 `MENU`, `mountTopbar`에 있다. 공용 CSS는 `assets/style.css`
-- 디자인: 토스 느낌, Pretendard 글꼴, Tossface 이모지. 화면에 군더더기 문구를 넣지 않는다.
+- 한 화면 앱(`index.html`). 주소 `#` 뒤 이름으로 화면을 바꾼다: `#today` 오늘 루틴(기본: 달력 + 고른 날의 할 일), `#archive` 저장소(달별 달성률, 날짜별 기록), `#money` 돈 관리, `#fixed` 고정 지출, `#items` 내 물건, `#shopping` 필요한 물건(뒤의 넷은 아직 빈 화면)
+- `assets/app.js` 화면·메뉴·계산, `assets/fx.js` 배경 애니메이션(별, 리본, 혜성, 탭 효과), `assets/style.css`, `manifest.webmanifest`(홈 화면에 앱으로 추가)
+- 디자인: 밤하늘 게임 월드. 남색 배경에 팝 네온색, 유리 패널, 숫자는 Unbounded, 한글은 Pretendard, 이모지는 Tossface. 화면에 군더더기 문구를 넣지 않는다.
+- 게임 요소: 끝낸 할 일은 걸린 분만큼 XP(시간 없으면 30), 결과만 기록된 날은 달성률만큼 XP. 500 XP마다 레벨 업. 🔥는 체크된 날의 연속 일수.
 
 ## 기록 형식 (`data/days.json`)
 ```json
