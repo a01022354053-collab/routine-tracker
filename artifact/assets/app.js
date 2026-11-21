@@ -241,6 +241,32 @@ async function putShopping(v) {
 const itemsOf = () => (S.items.list || []).filter(x => !x.removed);
 const shopOf = () => (S.shopping.list || []).filter(x => !x.removed);
 
+// 웹에서만: 돈 관리 화면을 열면 /api/quote로 시세를 받아 stocks/main에 넣는다(10분에 한 번)
+let quoteAt = 0;
+async function webQuotes() {
+  if (!window.__webMode || !DB || UI.status !== 'ok' || Date.now() - quoteAt < 600000) return;
+  const hs = (S.stocks.holdings || []).filter(h => h.code && !h.removed);
+  if (!hs.length) return;
+  quoteAt = Date.now();
+  try {
+    const r = await fetch(`/api/quote?codes=${hs.map(h => h.code).join(',')}`, { cache: 'no-store' });
+    if (!r.ok) return;
+    const { quotes } = await r.json();
+    const st = clone(S.stocks);
+    let changed = false;
+    for (const h of st.holdings || []) {
+      const q = quotes?.[h.code];
+      if (!q || !(q.price > 0) || h.removed) continue;
+      if (h.quote?.tradedAt === q.tradedAt && h.price === q.price) continue;
+      const last = (h.history || []).at(-1);
+      h.price = q.price; h.priceAt = q.fetchedAt; h.quote = q;
+      if (!last || last.price !== q.price) h.history = [...(h.history || []), { at: q.fetchedAt, price: q.price }];
+      changed = true;
+    }
+    if (changed) await putStocks(st);
+  } catch (e) { /* 다음에 */ }
+}
+
 async function putStocks(v) {
   if (!DB) throw new Error('저장소에 연결되지 않았어요');
   S.stocks = clone(v);
@@ -567,7 +593,7 @@ const monthNav = (y, m, scope) => `
   <button class="nav-btn" data-shift="1" data-scope="${scope}" aria-label="다음 달">${ICON.next}</button>`;
 
 function statusPanel(i) {
-  const msg = UI.status === 'nodb' ? '기록을 열 수 없어요. claude.ai에 로그인한 상태로 이 페이지를 열어 주세요.'
+  const msg = UI.status === 'nodb' ? (window.__webMode ? '기록을 열 수 없어요. 새로고침해 주세요.' : '기록을 열 수 없어요. claude.ai에 로그인한 상태로 이 페이지를 열어 주세요.')
     : UI.status === 'slow' ? '기록을 아직 불러오지 못했어요. 연결이 돌아오면 저절로 보여요.'
     : '불러오는 중…';
   return `<div class="panel anim" style="--i:${i}"><p class="empty">${msg}</p></div>`;
@@ -738,6 +764,11 @@ function viewArchive() {
           <div><b>전체 기록 내려받기</b><small>할 일, 감사한 점, 운동, 돈, 대화, 바꾼 기록 전부를 한 파일로</small></div>
           <button class="btn ghost" data-backup>내려받기</button>
         </section>
+        ${window.__webMode ? `<section class="panel anim backup" style="--i:9">
+          <div><b>백업 불러오기</b><small>내려받은 백업 파일의 기록을 이 계정에 넣어요</small></div>
+          <button class="btn ghost" data-restore>불러오기</button>
+        </section>
+        <button class="signout anim" style="--i:10" data-signout>로그아웃</button>` : ''}
       </div>
     </div>`;
 }
@@ -936,7 +967,7 @@ function viewMoney() {
               const t = new Date(q.tradedAt);
               const when = `${t.getMonth() + 1}월 ${t.getDate()}일 ${DAY[t.getDay()]}`;
               const sess = q.session && q.session !== '정규장' ? `${q.session} ` : '';
-              return `${when} ${q.status === 'OPEN' ? `${sess}${pad(t.getHours())}:${pad(t.getMinutes())} 시세` : `${sess || ''}${sess ? '' : '장 '}마감 가격`} · 평일 9:47·11:47·13:47·15:47 자동 갱신`;
+              return `${when} ${q.status === 'OPEN' ? `${sess}${pad(t.getHours())}:${pad(t.getMinutes())} 시세` : `${sess || ''}${sess ? '' : '장 '}마감 가격`} · ${window.__webMode ? '열 때마다 갱신' : '평일 9:47·11:47·13:47·15:47 자동 갱신'}`;
             })()}</span>`
           : '<p class="t-empty">아직 넣은 종목이 없어요</p>'}
         </section>
@@ -1342,7 +1373,7 @@ async function backup(btn) {
   btn.textContent = '모으는 중…';
   try {
     const out = { app: '일상 매니저', exportedAt: new Date().toISOString() };
-    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'chatlog', 'log', 'chat']) {
+    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'chatlog', 'log', 'chat', 'restored']) {
       const snap = await DB.collection(col).get();
       out[col] = Object.fromEntries(snap.docs.map(d => [d.id, d.data()]));
     }
@@ -1654,6 +1685,7 @@ function paint(mode = 'enter') {
     } else countUp($view);
     UI.still = false;
     paintHud();
+    if (id === 'money') webQuotes();
   };
   if (mode === 'route' && UI.view && !reduce) {
     $view.classList.add('leave');
@@ -2128,6 +2160,9 @@ $view.addEventListener('click', e => {
   if (mm) { const [y, m] = mm.dataset.moneyMonth.split('-').map(Number); UI.my = y; UI.mm = m - 1; location.hash = '#money'; return; }
   const bk = e.target.closest('[data-backup]');
   if (bk) { backup(bk); return; }
+  const rs = e.target.closest('[data-restore]');
+  if (rs) { window.__webRestore?.(rs); return; }
+  if (e.target.closest('[data-signout]')) { window.__webSignOut?.(); return; }
 });
 let cardDrag = null, dragFrom = null, suppressClick = false;
 $view.addEventListener('pointerdown', e => {

@@ -3,22 +3,28 @@
 사용자의 하루를 기록하는 개인 앱. Claude는 사용자의 **일상 매니저**다.
 
 ## 어디서 돌아가나
-- 앱 본체는 Claude 아티팩트(비공개, 사용자만 열 수 있음): https://claude.ai/artifact/GAtreHbyjVG2J54DC15riv
-- GitHub Pages(`claude/adoring-shannon-8ncj2s` 브랜치 루트)의 `index.html`은 위 아티팩트로 넘겨주는 페이지일 뿐이다.
-- 기록은 아티팩트 저장소(db)에 있다. 사용자는 앱에서 직접 체크하고, 감사한 점·운동·잔액을 적고, 앱 안의 '매니저와 대화'로 기록을 넣는다. 이 저장소에서는 코딩만 한다.
-- 기록을 직접 읽거나 고칠 때는 `ArtifactData` 도구를 쓴다(사용자가 부탁할 때만).
+같은 화면 코드(`artifact/`)가 두 곳에서 돈다. 기록은 두 곳이 따로 가진다(구조는 같다).
+- **웹** https://leeseung06.kro.kr — Vercel이 `main` 브랜치를 빌드한다(Next.js 16, `node_modules/next/dist/docs/`를 먼저 읽을 것). 기록은 Supabase 표 `app_docs`(`supabase/schema.sql`, RLS로 본인 것만). 로그인은 Supabase 이메일·비밀번호. Vercel 환경 변수: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `ANTHROPIC_API_KEY`(매니저), 선택 `ALLOWED_EMAILS`(매니저를 쓸 수 있는 이메일, 쉼표로).
+- **Claude 아티팩트**(비공개, 사용자만 열 수 있음): https://claude.ai/artifact/GAtreHbyjVG2J54DC15riv — 기록은 아티팩트 저장소(db). 직접 읽거나 고칠 때는 `ArtifactData` 도구(사용자가 부탁할 때만).
+- 아티팩트 기록을 웹으로 옮길 때: 저장소 화면 '내려받기'(또는 `ArtifactData`로 모은 같은 모양 JSON) → 웹 저장소 화면 '백업 불러오기'. 같은 경로에 다른 기록이 있으면 덮어쓰기 전 내용을 `restored/<시각>`에 남긴다.
+- 루트 `index.html`은 예전 GitHub Pages용으로 아티팩트로 넘겨주는 페이지다.
+- 사용자는 앱에서 직접 체크하고, 감사한 점·운동·잔액을 적고, 앱 안의 매니저로 기록을 넣는다. 이 저장소에서는 코딩만 한다.
 
 ## 코드
-- `app/index.html` 아티팩트 본문(doctype/head/body 없이 쓴다). `app/assets/app.js` 화면·저장·매니저 도구, `app/assets/fx.js` 배경 애니메이션, `app/assets/style.css`.
-- 글꼴은 `tools/fetch-fonts.sh`로 `app/fonts/`에 받는다(저장소에 넣지 않음). 아티팩트에는 이미 올라가 있어서, 코드만 고쳤으면 바뀐 파일만 `files`로 다시 올리면 된다.
-- 다시 올리기: Artifact 도구로 `file_path: app/index.html`, `url`은 위 주소, 바뀐 파일만 `files`에 (예: `{"assets/app.js": "app/assets/app.js"}`). `capabilities`는 생략해서 그대로 둔다(지금: db 규칙 소유자만 읽기·쓰기, sample(사진 포함), downloads).
+- 화면(두 곳 공통): `artifact/index.html` 본문(doctype/head/body 없이 쓴다). `artifact/assets/app.js` 화면·저장·매니저 도구, `artifact/assets/fx.js` 배경 애니메이션, `artifact/assets/style.css`. 루트에 `app/` 폴더를 만들면 Next.js가 `src/app`을 무시하니 만들지 않는다.
+- 웹 전용: `web/web.js`는 `window.claude`가 없을 때(웹) 같은 모양의 `window.claude`를 만든다 — db → Supabase `app_docs`(문서 경로 = `path`, 컬렉션 = `col`, 실시간 + 화면 복귀·1분마다 다시 읽기), sample → `/api/manager`(도구는 브라우저가 실행, 최대 8번 왕복, 사진은 줄여서 JPEG), downloads → 브라우저 내려받기. 로그인 화면, 백업 불러오기(`window.__webRestore`), 로그아웃(`window.__webSignOut`)도 여기. `web/web.css`는 로그인 화면. app.js에서 웹에서만 할 일은 `window.__webMode`로 가른다(저장소 화면의 불러오기·로그아웃, 돈 관리 화면을 열면 `/api/quote`로 시세 갱신 10분에 한 번).
+- 서버: `src/app/api/config`(Supabase 공개 설정), `src/app/api/quote`(네이버 시세, `tools/stock-quote.sh`와 같은 규칙), `src/app/api/manager`(Supabase 토큰 확인 → `@anthropic-ai/sdk`로 Claude 호출, 서버 쪽 거절 대비 fallbacks 켬).
+- 웹 빌드: `npm run build`/`npm run dev` 전에 `tools/build-web.mjs`가 `artifact/`를 `public/`(index.html·assets·private·web·vendor, .gitignore)로 옮기고 본문을 완전한 HTML로 감싼다. `/`는 `next.config.ts` rewrite로 `public/index.html`. 글꼴은 `artifact/fonts/`가 있으면 그것, 없으면(Vercel) CDN(Pretendard·Tossface jsDelivr).
+- 글꼴은 `tools/fetch-fonts.sh`로 `artifact/fonts/`에 받는다(저장소에 넣지 않음). 아티팩트에는 이미 올라가 있어서, 코드만 고쳤으면 바뀐 파일만 `files`로 다시 올리면 된다.
+- 아티팩트 다시 올리기: Artifact 도구로 `file_path: artifact/index.html`, `url`은 위 주소, 바뀐 파일만 `files`에 (예: `{"assets/app.js": "artifact/assets/app.js"}`). `capabilities`는 생략해서 그대로 둔다(지금: db 규칙 소유자만 읽기·쓰기, sample(사진 포함), downloads). 웹은 `main`에 올리면 Vercel이 다시 배포한다.
 - 화면: `#today` 오늘 루틴(달력 + 고른 날의 할 일 카드, 가로로 넘김) · `#archive` 저장소(달별 달성률, 날짜별 기록) · `#money` 돈 관리 · `#fixed` 고정 지출 · `#items` 내 물건(자주 쓰는 물건과 가격, 사진 있는 건 입체 카드, '다 떨어졌어요'로 살 것에 넣기) · `#shopping` 필요한 물건(살 것을 글로, 묶음별, 체크하면 산 것). 컴퓨터(960px 이상)에서는 두 칸으로 넓게.
 - 할 일 정하기: 오늘을 보고 있으면 '내일 할 일' 칸이 늘 보인다(폰이 없는 날을 위해 전날 미리 정함). '+ 할 일 추가' 카드(날짜·종류·이름·아이콘·시간·양, 자주 하는 할 일, '넣고 하나 더'), '오늘 목록 그대로 가져오기', '고치기' 모드(눌러서 이름·시간 고치기, 빼기 = 숨김). 고친 할 일은 예전 값을 `history`에 남긴다.
 - 돈 관리는 이 화면만 토스 다크 모드 디자인(납작한 카드 `--t-*` 색, 토스 파랑, Pretendard 큰 숫자, '~했어요' 문장). 입력은 모두 수동. 내 자산(잔액 입력·내역 추가) → 계좌(누르면 토스식 계좌 상세: 잔액, 이 통장 내역, 잔액 기록) → 월급날 → 이번 달 소비(지난달 같은 기간과 비교, 예산 65만원 대비, 분류별) → 그 달 입출금 내역. 은행 자동 연결은 불가(오픈뱅킹·마이데이터는 허가받은 사업자 전용)라서, '은행 앱 캡처로 넣기'로 사진을 매니저에게 보내면 잔액·거래를 읽어 넣는다.
-- 돈 관리 구성: 내 자산(쓸 수 있는 돈=농협+신한, 따로 모으는 돈=카카오뱅크, 군적금, 주식) → 계좌 → 군적금 저금통(병 두 개가 차오름, 매달 10일 IBK 30만·신한 25만 자동 입금 기록, 만기=넣은 돈×2 정부 100% 매칭·이자 별도) → 주식 표(산 가격·지금 가격·전일 대비·손익, 한국식으로 이익 빨강·손실 파랑) → 나라사랑카드(입체 카드 `app/private/card-narasarang.png`, 카드 사용 = `method: 'card'` 지출, 이번 달 정리) → 월급날 → 소비 → 내역.
+- 돈 관리 구성: 내 자산(쓸 수 있는 돈=농협+신한, 따로 모으는 돈=카카오뱅크, 군적금, 주식) → 계좌 → 군적금 저금통(병 두 개가 차오름, 매달 10일 IBK 30만·신한 25만 자동 입금 기록, 만기=넣은 돈×2 정부 100% 매칭·이자 별도) → 주식 표(산 가격·지금 가격·전일 대비·손익, 한국식으로 이익 빨강·손실 파랑) → 나라사랑카드(입체 카드 `artifact/private/card-narasarang.png`, 카드 사용 = `method: 'card'` 지출, 이번 달 정리) → 월급날 → 소비 → 내역.
 - 계좌 이체: 내 통장끼리 실제로 옮긴 돈을 숫자만 옮긴다(소비·수입 아님). 계좌 줄의 '이체' 버튼이나 내 자산의 '이체'. 이체 기록을 누르면 취소(잔액 원상복구, 기록은 removed로 남김).
-- 주식 시세: 앱은 바깥에 접속할 수 없어서, 예약 작업 '일상 매니저 주식 시세 갱신'(trig_01Kr3EFGi9EueK6q3P2RtCWL, 평일 KST 9:47·11:47·13:47·15:47)이 새 세션에서 시세를 받아 `ArtifactData`로 `stocks/main`의 holdings[].price·priceAt·quote·history를 갱신한다. 손으로 할 때는 `bash tools/stock-quote.sh 005930`. 토스증권과 같은 거래소 가격으로, 정규장과 넥스트레이드 시간외 중 더 최근 체결가를 쓴다(토스증권 내부 API는 로그인 브라우저 전용이라 못 씀). history는 지우지 않는다.
-- 카드·은행 로고·상품 사진은 공개 저장소에 넣지 않는다(`app/private/`는 .gitignore). 아티팩트에는 `private/card-narasarang.png`, `private/bank-{nh,kakao,shinhan}.png`(은행 아이콘, 동그랗게 표시), `private/item-*.png`로 이미 올라가 있다.
+- 주식 시세(웹): 돈 관리 화면을 열면 `/api/quote`로 받아 `stocks/main`을 갱신한다(10분에 한 번, 가격이 바뀔 때만 history에 쌓음).
+- 주식 시세(아티팩트): 아티팩트는 바깥에 접속할 수 없어서, 예약 작업 '일상 매니저 주식 시세 갱신'(trig_01Kr3EFGi9EueK6q3P2RtCWL, 평일 KST 9:47·11:47·13:47·15:47)이 새 세션에서 시세를 받아 `ArtifactData`로 `stocks/main`의 holdings[].price·priceAt·quote·history를 갱신한다. 손으로 할 때는 `bash tools/stock-quote.sh 005930`. 토스증권과 같은 거래소 가격으로, 정규장과 넥스트레이드 시간외 중 더 최근 체결가를 쓴다(토스증권 내부 API는 로그인 브라우저 전용이라 못 씀). history는 지우지 않는다.
+- 이미지: `artifact/private/card-narasarang.png`(나라사랑카드 견본 디자인), `bank-{nh,kakao,shinhan}.png`(은행 아이콘, 동그랗게 표시), `item-*.png`(상품 사진). 개인 정보가 없는 공개 이미지라 웹 배포를 위해 저장소에 넣었다. 사용자 개인 사진이나 개인 정보가 담긴 이미지는 저장소에 넣지 않는다.
 - 매니저: 오른쪽 아래 동그라미(✦)를 누르면 지금 화면 위로 대화창이 열린다(휴대폰은 아래에서 올라오고, 컴퓨터는 오른쪽 아래에 뜬다). 메뉴의 '매니저와 대화'도 같은 창을 연다.
 - 디자인: 밤하늘 게임 월드. 남색 배경, 팝 네온, 유리 패널, 숫자는 Unbounded, 한글은 Pretendard, 이모지는 Tossface. 군더더기 문구를 넣지 않는다.
 

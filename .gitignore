@@ -40,6 +40,11 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# 일상 매니저: 글꼴은 빌드할 때 받고, 웹 빌드 결과는 저장소에 넣지 않는다
-app/fonts/
-public/app/
+# 일상 매니저: 글꼴은 tools/fetch-fonts.sh로 받고, 웹 빌드 결과(tools/build-web.mjs)는 저장소에 넣지 않는다
+artifact/fonts/
+public/index.html
+public/assets/
+public/private/
+public/web/
+public/vendor/
+public/fonts/

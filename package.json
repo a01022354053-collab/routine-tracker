@@ -1,14 +1,17 @@
 {
-  "name": "routine-tracker-build",
+  "name": "daily-manager",
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node tools/build-web.mjs",
     "dev": "next dev",
+    "prebuild": "node tools/build-web.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "1.6.0",
     "@supabase/supabase-js": "^2.119.2",
     "next": "16.4.6",
     "react": "19.3.0",

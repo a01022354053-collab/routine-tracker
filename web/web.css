@@ -1,0 +1,24 @@
+/* 웹(leeseung06.kro.kr)에서만 쓰는 화면: 로그인, 로그아웃 */
+.login {
+  position: fixed; inset: 0; z-index: 80;
+  display: grid; place-items: center; padding: 24px 16px;
+  background: radial-gradient(120% 80% at 50% 0%, rgba(160, 132, 255, .22), transparent 60%), rgba(13, 10, 34, .72);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  animation: loginIn .5s var(--out, ease) both 1.6s;
+}
+.no-boot .login { animation-delay: 0s; }
+.login.out { animation: loginOut .35s ease forwards; }
+@keyframes loginIn { from { opacity: 0; transform: scale(.97); } }
+@keyframes loginOut { to { opacity: 0; visibility: hidden; } }
+.login-card { width: min(100%, 380px); display: grid; gap: 14px; justify-items: stretch; padding: 28px 22px 22px; }
+.login-star { width: 52px; height: 52px; justify-self: center; color: var(--yellow); filter: drop-shadow(0 0 18px rgba(255, 220, 40, .6)); }
+.login h1 { margin: 0 0 4px; text-align: center; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
+.login label { display: grid; gap: 6px; font-size: 13px; font-weight: 700; color: var(--ink-3); }
+.login-msg { min-height: 20px; margin: 0; font-size: 14px; color: var(--ink-2); text-align: center; }
+.login-msg.bad { color: var(--red); }
+.login-alt { justify-self: center; padding: 8px 12px; font-size: 14px; font-weight: 700; color: var(--ink-2); }
+.signout {
+  display: block; width: fit-content; margin: 4px auto 0; padding: 10px 16px; border-radius: 14px;
+  font-size: 14px; font-weight: 700; color: var(--ink-3);
+}
+.signout:active { transform: scale(.96); }
