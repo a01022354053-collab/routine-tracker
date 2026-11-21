@@ -1,4 +1,4 @@
-/* 웹(leeseung06.kro.kr)에서만 쓰는 화면: 로그인, 로그아웃 */
+/* 웹(leeseung06.kro.kr)에서만 쓰는 화면: 비밀번호 화면, 로그아웃 */
 .login {
   position: fixed; inset: 0; z-index: 80;
   display: grid; place-items: center; padding: 24px 16px;
@@ -10,13 +10,16 @@
 .login.out { animation: loginOut .35s ease forwards; }
 @keyframes loginIn { from { opacity: 0; transform: scale(.97); } }
 @keyframes loginOut { to { opacity: 0; visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .login, .login.out, .login-card.shake { animation-duration: .01s; } }
 .login-card { width: min(100%, 380px); display: grid; gap: 14px; justify-items: stretch; padding: 28px 22px 22px; }
 .login-star { width: 52px; height: 52px; justify-self: center; color: var(--yellow); filter: drop-shadow(0 0 18px rgba(255, 220, 40, .6)); }
 .login h1 { margin: 0 0 4px; text-align: center; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
-.login label { display: grid; gap: 6px; font-size: 13px; font-weight: 700; color: var(--ink-3); }
+.login-pw { text-align: center; font-size: 20px; letter-spacing: .12em; height: 58px; }
+.login-pw::placeholder { letter-spacing: 0; font-size: 16px; color: var(--ink-3); }
+.login-card.shake { animation: shake .4s ease; }
+@keyframes shake { 20%, 60% { transform: translateX(-8px); } 40%, 80% { transform: translateX(8px); } }
 .login-msg { min-height: 20px; margin: 0; font-size: 14px; color: var(--ink-2); text-align: center; }
 .login-msg.bad { color: var(--red); }
-.login-alt { justify-self: center; padding: 8px 12px; font-size: 14px; font-weight: 700; color: var(--ink-2); }
 .signout {
   display: block; width: fit-content; margin: 4px auto 0; padding: 10px 16px; border-radius: 14px;
   font-size: 14px; font-weight: 700; color: var(--ink-3);

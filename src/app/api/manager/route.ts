@@ -1,8 +1,8 @@
 // 매니저 대화: 브라우저(web/web.js)가 대화와 도구 목록을 보내면 Claude에게 한 번 묻고 답을 그대로 돌려준다.
-// 도구 실행은 브라우저가 한다(기록은 로그인한 사람의 Supabase 저장소에 있으므로). 이 서버는 API 키만 지킨다.
+// 도구 실행은 브라우저가 한다(도구가 /api/db로 기록을 읽고 쓴다). 이 서버는 API 키만 지킨다.
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import { createClient } from "@supabase/supabase-js";
+import { signedIn, unauthorized } from "@/lib/server";
 
 export const maxDuration = 120;
 
@@ -14,25 +14,9 @@ type Body = {
 
 const fail = (status: number, error: string) => Response.json({ error }, { status });
 
-// 로그인한 사람인지 확인한다. ALLOWED_EMAILS(쉼표로 구분)가 있으면 그 사람만 쓸 수 있다
-async function who(request: Request) {
-  const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!token || !url || !anonKey) return null;
-  const { data, error } = await createClient(url, anonKey, { auth: { persistSession: false } }).auth.getUser(token);
-  if (error || !data.user) return null;
-  const allowed = (process.env.ALLOWED_EMAILS ?? "")
-    .split(",")
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-  if (allowed.length && !allowed.includes((data.user.email ?? "").toLowerCase())) return null;
-  return data.user;
-}
-
 export async function POST(request: Request) {
+  if (!(await signedIn())) return unauthorized();
   if (!process.env.ANTHROPIC_API_KEY) return fail(503, "ANTHROPIC_API_KEY가 설정되지 않았어요");
-  if (!(await who(request))) return fail(401, "로그인이 필요해요");
 
   let body: Body;
   try {

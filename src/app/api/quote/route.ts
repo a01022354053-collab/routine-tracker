@@ -2,6 +2,7 @@
 // 토스증권처럼 정규장(KRX)과 넥스트레이드(NXT) 시간외 중 더 최근 체결가를 '지금 가격'으로 쓴다.
 // GET /api/quote?codes=005930,000660 → { quotes: { "005930": { price, change, rate, ... } } }
 import type { NextRequest } from "next/server";
+import { signedIn, unauthorized } from "@/lib/server";
 
 type Quote = {
   code: string;
@@ -77,6 +78,7 @@ async function quote(code: string): Promise<Quote | null> {
 }
 
 export async function GET(request: NextRequest) {
+  if (!(await signedIn())) return unauthorized();
   const codes = [...new Set((request.nextUrl.searchParams.get("codes") ?? "").split(",").filter((c) => /^\d{6}$/.test(c)))].slice(0, 20);
   if (!codes.length) return Response.json({ error: "codes=005930 처럼 종목코드를 주세요" }, { status: 400 });
   const results = await Promise.all(codes.map((c) => quote(c).catch(() => null)));
