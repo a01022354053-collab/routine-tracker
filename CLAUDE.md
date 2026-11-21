@@ -15,6 +15,8 @@
 - 화면: `#today` 오늘 루틴(달력 + 고른 날의 할 일 카드, 가로로 넘김) · `#archive` 저장소(달별 달성률, 날짜별 기록) · `#money` 돈 관리 · `#fixed` 고정 지출 · `#items` 내 물건 · `#shopping` 필요한 물건(마지막 둘은 빈 화면). 컴퓨터(960px 이상)에서는 두 칸으로 넓게.
 - 할 일 정하기: 오늘을 보고 있으면 '내일 할 일' 칸이 늘 보인다(폰이 없는 날을 위해 전날 미리 정함). '+ 할 일 추가' 카드(날짜·종류·이름·아이콘·시간·양, 자주 하는 할 일, '넣고 하나 더'), '오늘 목록 그대로 가져오기', '고치기' 모드(눌러서 이름·시간 고치기, 빼기 = 숨김). 고친 할 일은 예전 값을 `history`에 남긴다.
 - 돈 관리는 이 화면만 토스 다크 모드 디자인(납작한 카드 `--t-*` 색, 토스 파랑, Pretendard 큰 숫자, '~했어요' 문장). 입력은 모두 수동. 내 자산(잔액 입력·내역 추가) → 계좌(누르면 토스식 계좌 상세: 잔액, 이 통장 내역, 잔액 기록) → 월급날 → 이번 달 소비(지난달 같은 기간과 비교, 예산 65만원 대비, 분류별) → 그 달 입출금 내역. 은행 자동 연결은 불가(오픈뱅킹·마이데이터는 허가받은 사업자 전용)라서, '은행 앱 캡처로 넣기'로 사진을 매니저에게 보내면 잔액·거래를 읽어 넣는다.
+- 돈 관리 구성: 내 자산(쓸 수 있는 돈=농협+신한, 따로 모으는 돈=카카오뱅크, 군적금, 주식) → 계좌 → 군적금 저금통(병 두 개가 차오름, 매달 10일 IBK 30만·신한 25만 자동 입금 기록, 만기=넣은 돈×2 정부 100% 매칭·이자 별도) → 주식 표(현재가는 직접 입력, 한국식으로 이익 빨강·손실 파랑) → 나라사랑카드(입체 카드 `app/private/card-narasarang.png`, 카드 사용 = `method: 'card'` 지출, 이번 달 정리) → 월급날 → 소비 → 내역.
+- 카드 이미지는 공개 저장소에 넣지 않는다(`app/private/`는 .gitignore). 아티팩트에는 `private/card-narasarang.png`로 이미 올라가 있다.
 - 매니저: 오른쪽 아래 동그라미(✦)를 누르면 지금 화면 위로 대화창이 열린다(휴대폰은 아래에서 올라오고, 컴퓨터는 오른쪽 아래에 뜬다). 메뉴의 '매니저와 대화'도 같은 창을 연다.
 - 디자인: 밤하늘 게임 월드. 남색 배경, 팝 네온, 유리 패널, 숫자는 Unbounded, 한글은 Pretendard, 이모지는 Tossface. 군더더기 문구를 넣지 않는다.
 
@@ -29,6 +31,8 @@
 - `spend/<YYYY-MM>`: `{ month, items: [{ id, date, amount, title, type?, cat?, bank?, at, history?, removed? }] }` — 입출금 내역. `type: 'in'`이면 들어온 돈, 없으면 나간 돈. `cat`: food·snack·life·move·shop·phone·fun·etc. bank: nh·kakao·shinhan·cash
 - `chatlog/<YYYY-MM-DD>`: `{ date, messages: [{ role, content, at, actions? }] }` — 매니저와 나눈 대화 전부
 - `log/<YYYY-MM-DD>`: `{ date, entries: [{ at, text }] }` — 체크, 감사한 점, 메모, 운동, 잔액, 지출, 매니저가 한 일까지 바꾼 것 전부
+- `savings/main`: `{ payday, lastMonth: 'YYYY-MM'(마지막 입금 달), lastMonthGuess?, match: 1, accounts: [{ id, name, short, color, monthly, initial, asOf, deposits: [{ month, date, amount, auto, at }], history? }] }` — 잔액 = initial + deposits. 앱을 열면 지난 월급날 입금을 달마다 한 번씩 저절로 기록한다
+- `stocks/main`: `{ holdings: [{ id, name, code?, qty, avg, price, priceAt, history: [{ at, price }], changes? }] }`
 - `chat/log`: 예전 대화 문서(날짜별 `chatlog`로 옮겨졌고 `migrated: true`). 지우지 않고 둔다
 - 저장소 화면의 '전체 기록 내려받기'는 위 전부를 JSON 한 파일로 준다(`downloads` 기능)
 - 처음 넣은 기록은 `tools/seed.json`

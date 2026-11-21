@@ -16,6 +16,12 @@ const BANKS = [
   { id: 'shinhan', name: '신한', short: '신', color: '#5b8cff' },
 ];
 const DEFAULT_MONEY = { payday: 10, savings: 550000, spend: 650000, balances: { nh: null, kakao: null, shinhan: null } };
+// 통장마다 하는 일: 농협은 월급, 신한은 나라사랑카드, 카카오뱅크는 따로 모으는 돈. 쓸 수 있는 돈 = 농협 + 신한
+const ACCT_ROLE = { nh: '월급 통장', shinhan: '나라사랑 통장 · 카드', kakao: '따로 모으는 돈' };
+const USABLE = ['nh', 'shinhan'];
+// 군적금(장병내일준비적금): 매달 월급날에 자동 입금, 만기 때 넣은 돈만큼 정부가 더 준다(100% 매칭, 이자 별도)
+const DEFAULT_SAVINGS = { payday: 10, lastMonth: null, match: 1, accounts: [] };
+const DEFAULT_STOCKS = { holdings: [] };
 
 const MENU = [
   { id: 'today', emoji: '📅', name: '오늘 루틴' },
@@ -59,6 +65,8 @@ const S = {
   logDays: {},    // 날짜 → 그날 바꾼 것들
   spend: {},      // 'YYYY-MM' → 지출 목록
   balhist: {},    // 'YYYY-MM' → 잔액 기록
+  savings: clone(DEFAULT_SAVINGS),   // 군적금
+  stocks: clone(DEFAULT_STOCKS),     // 주식
 };
 const UI = {
   status: 'loading', // loading | ok | slow | nodb
@@ -171,6 +179,82 @@ async function putSpend(mk, items) {
   refresh();
   return queue(`spend/${mk}`, () => DB.doc(`spend/${mk}`).set({ month: mk, items }));
 }
+async function putSavings(v) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.savings = clone(v);
+  refresh();
+  return queue('savings/main', () => DB.doc('savings/main').set(v));
+}
+async function putStocks(v) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.stocks = clone(v);
+  refresh();
+  return queue('stocks/main', () => DB.doc('stocks/main').set(v));
+}
+
+/* ---------- 군적금 계산 ---------- */
+const monthAdd = (mk, n) => { const [y, m] = mk.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); return monthKey(d.getFullYear(), d.getMonth()); };
+const monthsBetween = (a, b) => { const [ay, am] = a.split('-').map(Number), [by, bm] = b.split('-').map(Number); return (by - ay) * 12 + (bm - am); };
+const savBalance = a => (a.initial || 0) + (a.deposits || []).reduce((s, d) => s + (d.amount || 0), 0);
+// 기준일 다음부터, 월급날이 지났고 만기 전인데 아직 안 넣은 달들
+function dueMonths(a, sv) {
+  const as = parseKey(a.asOf || TODAY);
+  let mk = monthKey(as.getFullYear(), as.getMonth());
+  if (as.getDate() >= sv.payday) mk = monthAdd(mk, 1);
+  const have = new Set((a.deposits || []).map(d => d.month)), out = [];
+  for (let i = 0; i < 40; i++, mk = monthAdd(mk, 1)) {
+    if (sv.lastMonth && mk > sv.lastMonth) break;
+    if (`${mk}-${pad(sv.payday)}` > TODAY) break;
+    if (!have.has(mk)) out.push(mk);
+  }
+  return out;
+}
+// 매달 월급날이 지나면 정해진 금액을 저절로 넣고 기록을 남긴다(같은 달은 한 번만)
+let depositing = false;
+async function autoDeposit() {
+  if (!DB || depositing || !(S.savings.accounts || []).length) return;
+  const sv = clone(S.savings), added = [];
+  for (const a of sv.accounts) {
+    for (const mk of dueMonths(a, sv)) {
+      a.deposits = [...(a.deposits || []), { month: mk, date: `${mk}-${pad(sv.payday)}`, amount: a.monthly, auto: true, at: new Date().toISOString() }];
+      added.push(`${Number(mk.slice(5))}월 ${a.short} ${won(a.monthly)}`);
+    }
+  }
+  if (!added.length) return;
+  depositing = true;
+  try { await putSavings(sv); logAct(`군적금 자동 입금 · ${added.join(', ')}`); } catch (e) { /* 다음에 다시 */ }
+  depositing = false;
+}
+function savPlan() {
+  const sv = S.savings;
+  const curMk = TODAY.slice(0, 7);
+  const nextFromToday = parseKey(TODAY).getDate() < sv.payday ? curMk : monthAdd(curMk, 1);
+  const accts = (sv.accounts || []).map(a => {
+    const bal = savBalance(a);
+    const as = parseKey(a.asOf || TODAY);
+    let afterBase = monthKey(as.getFullYear(), as.getMonth());
+    if (as.getDate() >= sv.payday) afterBase = monthAdd(afterBase, 1);
+    const next = nextFromToday > afterBase ? nextFromToday : afterBase;
+    const rem = sv.lastMonth ? Math.max(0, monthsBetween(next, sv.lastMonth) + 1) : 0;
+    const end = bal + rem * (a.monthly || 0);
+    return { ...a, bal, rem, end, payout: Math.round(end * (1 + (sv.match ?? 1))) };
+  });
+  const sum = k => accts.reduce((s, a) => s + a[k], 0);
+  const monthly = accts.reduce((s, a) => s + (a.monthly || 0), 0);
+  const nextDate = `${nextFromToday}-${pad(sv.payday)}`;
+  return { accts, bal: sum('bal'), end: sum('end'), payout: sum('payout'), monthly, rem: Math.max(0, ...accts.map(a => a.rem)), nextDate };
+}
+function stockSum() {
+  const hs = (S.stocks.holdings || []).filter(h => !h.removed);
+  const rows = hs.map(h => {
+    const cost = h.qty * h.avg, value = h.price != null ? h.qty * h.price : null;
+    return { ...h, cost, value, pnl: value != null ? value - cost : null, rate: value != null && cost ? ((value - cost) / cost) * 100 : null };
+  });
+  const priced = rows.filter(r => r.value != null);
+  return { rows, cost: rows.reduce((s, r) => s + r.cost, 0), value: priced.length ? priced.reduce((s, r) => s + r.value, 0) : null,
+    pnl: priced.length ? priced.reduce((s, r) => s + r.pnl, 0) : null, allPriced: priced.length === rows.length };
+}
+
 // 잔액이 바뀔 때마다 그 달 잔액 기록에 남긴다
 function addBalHist(bankId, amount) {
   if (!DB) return;
@@ -260,6 +344,17 @@ async function connect() {
     snap.docs.forEach(d => { o[d.id] = d.data(); });
     if (same(o, S.spend)) return;
     S.spend = o;
+    refresh();
+  }, () => {});
+  DB.doc('savings/main').onSnapshot(d => {
+    const v = { ...clone(DEFAULT_SAVINGS), ...(d.data() || {}) };
+    if (!same(v, S.savings)) { S.savings = v; refresh(); }
+    autoDeposit();
+  }, () => {});
+  DB.doc('stocks/main').onSnapshot(d => {
+    const v = { ...clone(DEFAULT_STOCKS), ...(d.data() || {}) };
+    if (same(v, S.stocks)) return;
+    S.stocks = v;
     refresh();
   }, () => {});
   DB.collection('balhist').onSnapshot(snap => {
@@ -619,30 +714,73 @@ function txRowHTML(mk, x) {
   </button>`;
 }
 
+const updown = (n, unit = '원') => `${n > 0 ? '+' : n < 0 ? '-' : ''}${unit === '%' ? Math.abs(n).toFixed(1) : Math.abs(Math.round(n)).toLocaleString('ko-KR')}${unit}`;
+const CARD_IMG = 'private/card-narasarang.png';
+
+function cardItems(mk) { return spendOf(mk).filter(x => x.method === 'card' && x.type !== 'in'); }
+
+function jarSVG(pct, id, color) {
+  const top = 34, bottom = 132, y = bottom - (bottom - top) * Math.max(0, Math.min(1, pct));
+  return `<svg class="jar" viewBox="0 0 120 140" role="img" aria-label="${Math.round(pct * 100)}% 모임">
+    <defs>
+      <clipPath id="jc-${id}"><path d="M30 26h60v8c12 6 16 16 16 30v52c0 14-8 20-22 20H36c-14 0-22-6-22-20V64c0-14 4-24 16-30z"/></clipPath>
+      <linearGradient id="jl-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".95"/><stop offset="1" stop-color="${color}" stop-opacity=".55"/></linearGradient>
+    </defs>
+    <g clip-path="url(#jc-${id})">
+      <rect width="120" height="140" fill="rgba(255,255,255,.05)"/>
+      <g class="liquid" style="--y:${y.toFixed(1)}px">
+        <path class="wave" d="M-60 0q15-7 30 0t30 0t30 0t30 0t30 0t30 0t30 0v150h-210z" fill="url(#jl-${id})"/>
+      </g>
+    </g>
+    <path d="M30 26h60v8c12 6 16 16 16 30v52c0 14-8 20-22 20H36c-14 0-22-6-22-20V64c0-14 4-24 16-30z" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="3"/>
+    <rect x="26" y="14" width="68" height="13" rx="5" fill="#ffd34d"/><rect x="48" y="18" width="24" height="4" rx="2" fill="#a07a00"/>
+    <ellipse cx="44" cy="70" rx="6" ry="18" fill="rgba(255,255,255,.14)"/>
+  </svg>`;
+}
+
 function viewMoney() {
   const M = S.money, p = payInfo();
-  const known = BANKS.filter(b => M.balances[b.id] != null);
-  const sum = known.reduce((s, b) => s + Number(M.balances[b.id] || 0), 0);
+  const bal = id => (M.balances[id] == null ? null : Number(M.balances[id]));
+  const usable = USABLE.reduce((s, id) => s + (bal(id) || 0), 0), usableKnown = USABLE.some(id => bal(id) != null);
+  const saveCash = bal('kakao');
+  const sv = savPlan(), st = stockSum();
+  const total = usable + (saveCash || 0) + sv.bal + (st.value || 0);
   const mk = monthKey(UI.my, UI.mm), isNow = mk === TODAY.slice(0, 7);
   const items = spendOf(mk), out = items.filter(x => x.type !== 'in');
-  const total = spentIn(mk), income = incomeIn(mk), budget = M.spend || 0;
-  const left = budget - total, pct = budget ? Math.min(100, Math.round((total / budget) * 100)) : 0;
+  const spent = spentIn(mk), income = incomeIn(mk), budget = M.spend || 0;
+  const left = budget - spent, pct = budget ? Math.min(100, Math.round((spent / budget) * 100)) : 0;
 
   // 지난달 같은 기간과 비교 (지난 달을 보고 있으면 그 전 달 전체와)
   const prev = new Date(UI.my, UI.mm - 1, 1), pk = monthKey(prev.getFullYear(), prev.getMonth());
   const upto = isNow ? parseKey(TODAY).getDate() : 31;
   const prevItems = spendOf(pk).filter(x => x.type !== 'in' && parseKey(x.date).getDate() <= upto);
-  const prevTotal = prevItems.reduce((s, x) => s + x.amount, 0);
-  const diff = total - prevTotal;
+  const diff = spent - prevItems.reduce((s, x) => s + x.amount, 0);
   const compare = !prevItems.length ? '' : diff === 0 ? '지난달과 똑같이 썼어요'
     : `${isNow ? '지난달 같은 기간보다' : '전달보다'} <em class="${diff < 0 ? 'good' : 'bad'}">${won(Math.abs(diff))} ${diff < 0 ? '덜' : '더'}</em> 썼어요`;
-
-  const byCat = {};
-  out.forEach(x => { byCat[x.cat || 'etc'] = (byCat[x.cat || 'etc'] || 0) + x.amount; });
-  const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+  const catsOf = list => {
+    const by = {};
+    list.forEach(x => { by[x.cat || 'etc'] = (by[x.cat || 'etc'] || 0) + x.amount; });
+    return Object.entries(by).sort((a, b) => b[1] - a[1]);
+  };
+  const catsHTML = (cats, sum) => `<div class="t-cats">${cats.map(([c, v]) => `
+    <div class="t-cat"><span class="ico" style="--cc:${catOf(c).c}"><span class="emoji" aria-hidden="true">${catOf(c).emoji}</span></span>
+      <span class="nm">${catOf(c).name}<small class="num">${Math.round((v / sum) * 100)}%</small></span>
+      <span class="num">${won(v)}</span></div>`).join('')}</div>`;
   const byDay = {};
   items.forEach(x => (byDay[x.date] = byDay[x.date] || []).push(x));
   const days = Object.keys(byDay).sort().reverse();
+
+  const cards = cardItems(mk), cardSum = cards.reduce((s, x) => s + x.amount, 0);
+  const uncategorized = cards.filter(x => !x.cat).length;
+
+  const acctRow = b => {
+    const v = bal(b.id);
+    return `<button class="t-row acct" data-acct="${b.id}" style="--b:${b.color}">
+      <span class="ico bank">${b.short}</span>
+      <span class="txt"><small>${b.name} · ${ACCT_ROLE[b.id]}</small><b class="num">${v == null ? '잔액을 넣어 주세요' : won(v)}</b></span>
+      ${ICON.next}
+    </button>`;
+  };
 
   return `
     <div class="view-title anim" style="--i:0">${ICON.star}<h1>돈 관리</h1></div>
@@ -651,8 +789,11 @@ function viewMoney() {
       <div class="money-col">
         <section class="t-card anim" style="--i:1">
           <span class="t-label">내 자산</span>
-          <div class="t-big num"${known.length ? wonAttr(sum) : '>아직 몰라요'}</div>
-          <span class="t-sub">${known.length < BANKS.length ? `통장 ${BANKS.length}개 중 ${known.length}개 입력` : `통장 ${BANKS.length}개`}${latestAt() ? ` · ${shortAgo(latestAt())}` : ''}</span>
+          <div class="t-big num"${wonAttr(total)}</div>
+          <div class="t-kv"><span>쓸 수 있는 돈 <small>농협 + 신한</small></span><b class="num">${usableKnown ? won(usable) : '–'}</b></div>
+          <div class="t-kv"><span>따로 모으는 돈 <small>카카오뱅크</small></span><b class="num">${saveCash == null ? '–' : won(saveCash)}</b></div>
+          <div class="t-kv"><span>군적금</span><b class="num">${sv.accts.length ? won(sv.bal) : '–'}</b></div>
+          <div class="t-kv"><span>주식</span><b class="num">${st.rows.length ? (st.value != null ? won(st.value) : '현재가 필요') : '–'}</b></div>
           <div class="t-btns">
             <button class="t-btn primary" data-bal-all>잔액 입력</button>
             <button class="t-btn" data-add-expense="${TODAY.slice(0, 7)}">내역 추가</button>
@@ -660,44 +801,97 @@ function viewMoney() {
         </section>
 
         <section class="t-card anim" style="--i:2">
-          <div class="t-head"><b>계좌</b><span class="num">${BANKS.length}</span></div>
-          ${BANKS.map(b => {
-            const v = M.balances[b.id];
-            return `<button class="t-row acct" data-acct="${b.id}" style="--b:${b.color}">
-              <span class="ico bank">${b.short}</span>
-              <span class="txt"><small>${b.name}</small><b class="num">${v == null ? '잔액을 넣어 주세요' : won(v)}</b></span>
-              ${ICON.next}
-            </button>`;
-          }).join('')}
+          <div class="t-head"><b>쓸 수 있는 돈</b><span class="num">${usableKnown ? won(usable) : ''}</span></div>
+          ${BANKS.filter(b => USABLE.includes(b.id)).map(acctRow).join('')}
+          <div class="t-head small"><b>따로 모으는 돈</b></div>
+          ${BANKS.filter(b => !USABLE.includes(b.id)).map(acctRow).join('')}
           ${UI.imgOK ? `<button class="t-row link" data-capture><span class="ico"><span class="emoji" aria-hidden="true">📷</span></span><span class="txt"><b>은행 앱 캡처로 넣기</b><small>사진을 보내면 매니저가 읽어 넣어요</small></span>${ICON.next}</button>` : ''}
         </section>
 
-        <section class="t-card anim" style="--i:3">
-          <span class="t-label">월급날까지</span>
-          <div class="t-big num">${p.left === 0 ? '오늘이에요' : `${p.left}일`}</div>
-          <span class="t-sub num">${p.next.getMonth() + 1}월 ${p.next.getDate()}일 ${DAY[p.next.getDay()]}요일 · 매달 ${M.payday}일</span>
-          <div class="t-bar"><i style="width:${p.pct}%"></i></div>
-          <div class="t-kv"><span>적금 (자동이체)</span><b class="num">${won(M.savings)}</b></div>
-          <div class="t-kv"><span>한 달 쓸 수 있는 돈</span><b class="num">${won(M.spend)}</b></div>
+        <section class="t-card anim piggy" style="--i:3">
+          <div class="t-head"><b>군적금 저금통</b><button class="t-mini" data-savings>설정</button></div>
+          ${sv.accts.length ? `
+            <span class="t-label">지금 모인 돈</span>
+            <div class="t-big num"${wonAttr(sv.bal)}</div>
+            <p class="t-say">만기에 <em class="good num">${won(sv.payout)}</em> 받아요 <small class="t-sub">이자 별도</small></p>
+            <div class="jars">${sv.accts.map((a, i) => `
+              <button class="jar-box" data-savings style="--jc:${a.color}">
+                ${jarSVG(a.end ? a.bal / a.end : 0, a.id, a.color)}
+                <b>${esc(a.short)}</b>
+                <span class="num">${won(a.bal)}</span>
+                <small class="num">매달 ${manwon(a.monthly)}</small>
+              </button>`).join('')}</div>
+            <div class="t-kv"><span>다음 자동 입금</span><b class="num">${sv.rem ? `${Number(sv.nextDate.slice(5, 7))}월 ${Number(sv.nextDate.slice(8))}일 · ${won(sv.monthly)}` : '끝났어요'}</b></div>
+            <div class="t-kv"><span>남은 입금${S.savings.lastMonthGuess ? ' <small>전역 달 추정</small>' : ''}</span><b class="num">${S.savings.lastMonth ? `${sv.rem}번 · ${S.savings.lastMonth.slice(2, 4)}년 ${Number(S.savings.lastMonth.slice(5))}월까지` : '만기 달을 넣어 주세요'}</b></div>
+            <div class="t-kv"><span>만기 원금 <small>넣은 돈</small></span><b class="num">${won(sv.end)}</b></div>
+            <div class="t-kv"><span>정부 매칭 <small>${Math.round((S.savings.match ?? 1) * 100)}%</small></span><b class="num in">+${won(sv.payout - sv.end)}</b></div>`
+          : '<p class="t-empty">아직 적금을 넣지 않았어요</p><button class="t-btn primary" data-savings>적금 넣기</button>'}
+        </section>
+
+        <section class="t-card anim" style="--i:4">
+          <div class="t-head"><b>주식</b><button class="t-mini" data-stock>${st.rows.length ? '현재가 입력' : '종목 추가'}</button></div>
+          ${st.rows.length ? `
+            <span class="t-label">평가 금액</span>
+            <div class="t-big num">${st.value != null ? won(st.value) : '현재가를 넣어 주세요'}</div>
+            ${st.pnl != null ? `<p class="t-say"><em class="${st.pnl >= 0 ? 'up' : 'down'} num">${updown(st.pnl)} (${updown((st.pnl / st.cost) * 100, '%')})</em></p>` : ''}
+            <div class="tbl-wrap"><table class="t-table">
+              <thead><tr><th>종목</th><th>수량</th><th>평균 단가</th><th>현재가</th><th>손익</th></tr></thead>
+              <tbody>${st.rows.map(r => `<tr data-stock="${esc(r.id)}">
+                <td><b>${esc(r.name)}</b></td>
+                <td class="num">${r.qty}주</td>
+                <td class="num">${won(r.avg)}</td>
+                <td class="num">${r.price != null ? won(r.price) : '–'}</td>
+                <td class="num ${r.pnl == null ? '' : r.pnl >= 0 ? 'up' : 'down'}">${r.pnl == null ? '–' : `${updown(r.pnl)}<small>${updown(r.rate, '%')}</small>`}</td>
+              </tr>`).join('')}</tbody>
+              <tfoot><tr><td>합계</td><td></td><td class="num">${won(st.cost)}</td><td class="num">${st.value != null ? won(st.value) : '–'}</td>
+                <td class="num ${st.pnl == null ? '' : st.pnl >= 0 ? 'up' : 'down'}">${st.pnl == null ? '–' : updown(st.pnl)}</td></tr></tfoot>
+            </table></div>
+            <span class="t-sub">${(() => { const at = st.rows.map(r => r.priceAt).filter(Boolean).sort().pop(); return at ? `현재가 ${ago(at)} · 직접 넣은 값이에요` : '현재가는 직접 넣어요'; })()}</span>`
+          : '<p class="t-empty">아직 넣은 종목이 없어요</p>'}
         </section>
       </div>
 
       <div class="money-col">
-        <section class="t-card anim" style="--i:4">
+        <section class="t-card anim nara" style="--i:5">
+          <div class="t-head"><b>나라사랑카드</b><span>신한 체크</span></div>
+          <div class="card3d" data-card3d>
+            <div class="card3d-float"><div class="card3d-in">
+              <img src="${CARD_IMG}" alt="신한 나라사랑카드" draggable="false">
+              <span class="card3d-shine" aria-hidden="true"></span>
+            </div></div>
+          </div>
+          <div class="t-month">${monthNav(UI.my, UI.mm, 'money')}</div>
+          <span class="t-label">${UI.mm + 1}월 카드 사용</span>
+          <div class="t-big num"${wonAttr(cardSum)}</div>
+          <span class="t-sub num">${cards.length ? `${cards.length}번 썼어요 · 한 번에 평균 ${won(Math.round(cardSum / cards.length))}` : '아직 카드 사용 기록이 없어요'}</span>
+          ${cards.length ? catsHTML(catsOf(cards), cardSum) : ''}
+          <div class="t-btns">
+            <button class="t-btn primary" data-add-card="${mk}">카드 사용 기록</button>
+            <button class="t-btn" data-card-sort="${mk}">${uncategorized ? `정리하기 · ${uncategorized}` : '이번 달 정리'}</button>
+          </div>
+        </section>
+
+        <section class="t-card anim" style="--i:6">
+          <span class="t-label">월급날까지</span>
+          <div class="t-big num">${p.left === 0 ? '오늘이에요' : `${p.left}일`}</div>
+          <span class="t-sub num">${p.next.getMonth() + 1}월 ${p.next.getDate()}일 ${DAY[p.next.getDay()]}요일 · 매달 ${M.payday}일</span>
+          <div class="t-bar"><i style="width:${p.pct}%"></i></div>
+          <div class="t-kv"><span>군적금 자동이체</span><b class="num">${won(M.savings)}</b></div>
+          <div class="t-kv"><span>한 달 쓸 수 있는 돈</span><b class="num">${won(M.spend)}</b></div>
+        </section>
+
+        <section class="t-card anim" style="--i:7">
           <div class="t-month">${monthNav(UI.my, UI.mm, 'money')}</div>
           <span class="t-label">${UI.mm + 1}월 소비</span>
-          <div class="t-big num"${wonAttr(total)}</div>
+          <div class="t-big num"${wonAttr(spent)}</div>
           ${compare ? `<p class="t-say">${compare}</p>` : ''}
           ${budget ? `<div class="t-bar ${left < 0 ? 'over' : ''}"><i style="width:${pct}%"></i></div>
             <p class="t-sub">${left >= 0 ? `예산 ${manwon(budget)} 중 <b class="num">${won(left)}</b> 남았어요` : `예산 ${manwon(budget)}을 <b class="num bad">${won(-left)}</b> 넘었어요`}</p>` : ''}
-          ${cats.length ? `<div class="t-cats">${cats.map(([c, v]) => `
-            <div class="t-cat"><span class="ico" style="--cc:${catOf(c).c}"><span class="emoji" aria-hidden="true">${catOf(c).emoji}</span></span>
-              <span class="nm">${catOf(c).name}<small class="num">${Math.round((v / total) * 100)}%</small></span>
-              <span class="num">${won(v)}</span></div>`).join('')}</div>` : ''}
+          ${out.length ? catsHTML(catsOf(out), spent) : ''}
           ${income ? `<div class="t-kv"><span>${UI.mm + 1}월 들어온 돈</span><b class="num in">+${won(income)}</b></div>` : ''}
         </section>
 
-        <section class="t-card anim" style="--i:5">
+        <section class="t-card anim" style="--i:8">
           <div class="t-head"><b>${UI.mm + 1}월 내역</b><span class="num">${items.length}</span><button class="t-mini" data-add-expense="${mk}">추가</button></div>
           ${days.length ? days.map(d => `
             <div class="t-day">${dayLabelT(d)}</div>
@@ -706,6 +900,119 @@ function viewMoney() {
         </section>
       </div>
     </div>`;
+}
+
+/* ---------- 군적금 · 주식 · 카드 시트 ---------- */
+function savingsSheet() {
+  const sv = clone(S.savings);
+  if (!sv.accounts.length) sv.accounts = [
+    { id: 'ibk', name: 'IBK 장병내일준비적금', short: 'IBK', color: '#2f7cf6', monthly: 300000, initial: 0, asOf: TODAY, deposits: [] },
+    { id: 'shinhan', name: '신한 장병내일준비적금', short: '신한', color: '#7b61ff', monthly: 250000, initial: 0, asOf: TODAY, deposits: [] },
+  ];
+  openSheet(`<div class="sh-head"><span class="q-icon"><span class="emoji" aria-hidden="true">🐷</span></span>
+      <div><h3>군적금 설정</h3><p>매달 ${sv.payday}일에 저절로 채워져요</p></div></div>
+    ${sv.accounts.map(a => `<div class="sh-sec sav-ed" data-sav="${a.id}">
+      <span class="label">${esc(a.name)}</span>
+      <div class="sav-grid">
+        <label>지금 모인 돈<span class="numfield"><input class="field" data-k="bal" inputmode="numeric" value="${savBalance(a)}"><span>원</span></span></label>
+        <label>매달 넣는 돈<span class="numfield"><input class="field" data-k="monthly" inputmode="numeric" value="${a.monthly}"><span>원</span></span></label>
+      </div></div>`).join('')}
+    <div class="sh-sec"><span class="label">마지막 입금 달 (전역 전 마지막 월급날)</span><input class="field" id="svLast" type="month" value="${sv.lastMonth || ''}"></div>
+    <div class="sh-sec"><span class="label">정부 매칭 비율</span><div class="numfield"><input class="field" id="svMatch" inputmode="numeric" value="${Math.round((sv.match ?? 1) * 100)}"><span>%</span></div></div>
+    <button class="btn" id="svSave">저장</button>`, body => {
+    body.querySelectorAll('input[inputmode="numeric"]').forEach(i => i.addEventListener('input', () => { i.value = i.value.replace(/[^\d]/g, ''); }));
+    body.querySelector('#svSave').addEventListener('click', async () => {
+      const lines = [];
+      for (const a of sv.accounts) {
+        const box = body.querySelector(`[data-sav="${a.id}"]`);
+        const nb = Number(box.querySelector('[data-k="bal"]').value) || 0, nm = Number(box.querySelector('[data-k="monthly"]').value) || 0;
+        if (nb !== savBalance(a)) {
+          // 지금 금액을 고치면 오늘을 새 기준으로 삼고, 예전 기준은 history에 남긴다
+          a.history = [...(a.history || []), { initial: a.initial, asOf: a.asOf, deposits: a.deposits, at: new Date().toISOString() }];
+          a.initial = nb; a.asOf = TODAY; a.deposits = [];
+          lines.push(`${a.short} ${won(nb)}`);
+        }
+        if (nm !== a.monthly) { a.monthly = nm; lines.push(`${a.short} 매달 ${won(nm)}`); }
+      }
+      const last = body.querySelector('#svLast').value;
+      if ((last || null) !== (S.savings.lastMonth || null) || S.savings.lastMonthGuess) { sv.lastMonth = last || null; delete sv.lastMonthGuess; lines.push(`마지막 입금 ${last || '없음'}`); }
+      const match = (Number(body.querySelector('#svMatch').value) || 0) / 100;
+      if (match !== (S.savings.match ?? 1)) { sv.match = match; lines.push(`매칭 ${Math.round(match * 100)}%`); }
+      try { await putSavings(sv); if (lines.length) logAct(`군적금 설정 · ${lines.join(', ')}`); toast('군적금을 저장했어요'); closeSheet(); } catch (e) { saveFail(); }
+    });
+  }, 'toss');
+}
+
+function stockSheet() {
+  const st = clone(S.stocks);
+  const hs = (st.holdings || []).filter(h => !h.removed);
+  openSheet(`<div class="sh-head"><span class="q-icon"><span class="emoji" aria-hidden="true">📈</span></span>
+      <div><h3>주식</h3><p>현재가는 증권 앱에서 보고 넣어요</p></div></div>
+    ${hs.map(h => `<div class="sh-sec" data-h="${esc(h.id)}"><span class="label">${esc(h.name)} · ${h.qty}주 · 평균 ${won(h.avg)}</span>
+      <div class="sav-grid">
+        <label>현재가<span class="numfield"><input class="field" data-k="price" inputmode="numeric" placeholder="0" value="${h.price ?? ''}"><span>원</span></span></label>
+        <label>수량<span class="numfield"><input class="field" data-k="qty" inputmode="numeric" value="${h.qty}"><span>주</span></span></label>
+        <label>평균 단가<span class="numfield"><input class="field" data-k="avg" inputmode="numeric" value="${h.avg}"><span>원</span></span></label>
+      </div></div>`).join('')}
+    <details class="add-stock"${hs.length ? '' : ' open'}><summary>종목 추가</summary>
+      <div class="sav-grid">
+        <label>종목 이름<input class="field" id="nsName" maxlength="20" placeholder="예: 삼성전자"></label>
+        <label>수량<span class="numfield"><input class="field" id="nsQty" inputmode="numeric" placeholder="0"><span>주</span></span></label>
+        <label>평균 단가<span class="numfield"><input class="field" id="nsAvg" inputmode="numeric" placeholder="0"><span>원</span></span></label>
+      </div></details>
+    <button class="btn" id="stSave">저장</button>`, body => {
+    body.querySelectorAll('input[inputmode="numeric"]').forEach(i => i.addEventListener('input', () => { i.value = i.value.replace(/[^\d]/g, ''); }));
+    body.querySelector('#stSave').addEventListener('click', async () => {
+      const now = new Date().toISOString(), lines = [];
+      for (const h of st.holdings.filter(x => !x.removed)) {
+        const box = body.querySelector(`[data-h="${CSS.escape(h.id)}"]`);
+        const price = box.querySelector('[data-k="price"]').value, qty = Number(box.querySelector('[data-k="qty"]').value), avg = Number(box.querySelector('[data-k="avg"]').value);
+        if (price !== '' && Number(price) !== h.price) {
+          h.price = Number(price); h.priceAt = now; h.history = [...(h.history || []), { at: now, price: h.price }];
+          lines.push(`${h.name} 현재가 ${won(h.price)}`);
+        }
+        if ((qty && qty !== h.qty) || (avg && avg !== h.avg)) {
+          h.changes = [...(h.changes || []), { at: now, qty: h.qty, avg: h.avg }];
+          if (qty) h.qty = qty; if (avg) h.avg = avg;
+          lines.push(`${h.name} ${h.qty}주 평균 ${won(h.avg)}`);
+        }
+      }
+      const nn = body.querySelector('#nsName').value.trim(), nq = Number(body.querySelector('#nsQty').value), na = Number(body.querySelector('#nsAvg').value);
+      if (nn && nq > 0 && na > 0) { st.holdings = [...(st.holdings || []), { id: newId(), name: nn, qty: nq, avg: na, price: null, priceAt: null, history: [], at: now }]; lines.push(`종목 추가 ${nn} ${nq}주 ${won(na)}`); }
+      try { await putStocks(st); if (lines.length) logAct(`주식 · ${lines.join(', ')}`); toast('저장했어요'); closeSheet(); } catch (e) { saveFail(); }
+    });
+  }, 'toss');
+}
+
+// 이번 달 카드 사용 정리: 분류 안 된 것부터 하나씩 분류를 붙인다
+function cardSortSheet(mk) {
+  const list = cardItems(mk).slice().sort((a, b) => (a.cat ? 1 : 0) - (b.cat ? 1 : 0) || (a.date < b.date ? 1 : -1));
+  const sum = list.reduce((s, x) => s + x.amount, 0);
+  const byWeek = {};
+  list.forEach(x => { const w = Math.ceil(parseKey(x.date).getDate() / 7); byWeek[w] = (byWeek[w] || 0) + x.amount; });
+  openSheet(`<div class="sh-head"><span class="q-icon"><span class="emoji" aria-hidden="true">💳</span></span>
+      <div><h3>${Number(mk.slice(5))}월 카드 사용 정리</h3><p class="num">${list.length}건 · ${won(sum)}</p></div></div>
+    ${list.length ? `<div class="sh-sec"><span class="label">주마다 쓴 돈</span>${[1, 2, 3, 4, 5].filter(w => byWeek[w]).map(w => `<div class="t-kv"><span>${w}주차</span><b class="num">${won(byWeek[w])}</b></div>`).join('')}</div>
+      <div class="sh-sec"><span class="label">분류 붙이기</span>${list.map(x => `
+        <div class="sort-row" data-sid="${esc(x.id)}"><div class="t-kv"><span>${dotDate(x.date)} ${esc(x.title)}</span><b class="num">${won(x.amount)}</b></div>
+          <div class="parts">${CATS.map(c => `<button class="pchip" data-c="${c.id}" aria-pressed="${x.cat === c.id}"><span class="emoji" aria-hidden="true">${c.emoji}</span> ${c.name}</button>`).join('')}</div></div>`).join('')}</div>
+      <button class="btn" id="sortSave">저장</button>` : '<p class="t-empty">이 달에는 카드 사용 기록이 없어요</p>'}`, body => {
+    const pick = {};
+    body.querySelectorAll('.sort-row').forEach(row => row.addEventListener('click', e => {
+      const b = e.target.closest('[data-c]'); if (!b) return;
+      pick[row.dataset.sid] = b.dataset.c;
+      row.querySelectorAll('[data-c]').forEach(x => x.setAttribute('aria-pressed', x === b));
+    }));
+    body.querySelector('#sortSave')?.addEventListener('click', async () => {
+      const items = clone(S.spend[mk]?.items || []), lines = [];
+      for (const [id, c] of Object.entries(pick)) {
+        const x = items.find(i => i.id === id);
+        if (x && x.cat !== c) { x.history = [...(x.history || []), { cat: x.cat, at: new Date().toISOString() }]; x.cat = c; lines.push(`${x.title} → ${catOf(c).name}`); }
+      }
+      if (!lines.length) { closeSheet(); return; }
+      try { await putSpend(mk, items); logAct(`카드 사용 정리 · ${lines.join(', ')}`); toast(`${lines.length}건 정리했어요`); closeSheet(); } catch (e) { saveFail(); }
+    });
+  }, 'toss');
 }
 
 function balHistHTML(bankId) {
@@ -762,10 +1069,11 @@ function balanceAllSheet() {
 }
 
 // 지출·입금 기록하기/고치기
-function expenseSheet(mk, id, presetBank) {
+function expenseSheet(mk, id, presetBank, presetMethod) {
   const cur = id ? (S.spend[mk]?.items || []).find(x => x.id === id) : null;
   const banks = [...BANKS.map(b => ({ id: b.id, name: b.name })), { id: 'cash', name: '현금' }];
-  const f = { type: cur?.type === 'in' ? 'in' : 'out', bank: cur?.bank || presetBank || '', cat: cur?.cat || '' };
+  const f = { type: cur?.type === 'in' ? 'in' : 'out', bank: cur?.bank || presetBank || '', cat: cur?.cat || '', method: cur?.method || presetMethod || '' };
+  if (f.method === 'card') f.bank = 'shinhan';
   const defDate = cur?.date || (mk === TODAY.slice(0, 7) ? TODAY : `${mk}-01`);
   openSheet(`<div class="sh-head" style="--c:var(--lime)"><span class="q-icon"><span class="emoji" aria-hidden="true" id="exIcon">${f.type === 'in' ? '💵' : '💸'}</span></span>
       <div><h3>${cur ? '내역 고치기' : '내역 기록'}</h3><p>${cur ? `${dotDate(cur.date)} 기록` : '기록해 두면 달마다 모여요'}</p></div></div>
@@ -775,6 +1083,8 @@ function expenseSheet(mk, id, presetBank) {
     <div class="sh-sec" id="exCatBox" ${f.type === 'in' ? 'hidden' : ''}><span class="label">분류</span><div class="parts" id="exCat">${CATS.map(c =>
       `<button class="pchip" data-c="${c.id}" aria-pressed="${c.id === f.cat}"><span class="emoji" aria-hidden="true">${c.emoji}</span> ${c.name}</button>`).join('')}</div></div>
     <div class="sh-sec"><span class="label">날짜</span><input class="field" id="exDate" type="date" value="${defDate}" max="${TODAY}"></div>
+    <div class="sh-sec" id="exMethodBox" ${f.type === 'in' ? 'hidden' : ''}><span class="label">결제</span><div class="parts" id="exMethod">${[['card', '💳 나라사랑카드'], ['transfer', '계좌'], ['cash', '현금']].map(([m, n]) =>
+      `<button class="pchip" data-m="${m}" aria-pressed="${m === f.method}">${n}</button>`).join('')}</div></div>
     <div class="sh-sec"><span class="label">통장</span><div class="parts" id="exBank">${banks.map(b => `<button class="pchip" data-b="${b.id}" aria-pressed="${b.id === f.bank}">${b.name}</button>`).join('')}</div></div>
     <div class="${cur ? 'btn-row' : ''}">${cur ? '<button class="btn ghost" id="exDel">기록에서 숨기기</button>' : ''}<button class="btn" id="exSave">저장</button></div>`, body => {
     const $ = q => body.querySelector(q);
@@ -785,10 +1095,17 @@ function expenseSheet(mk, id, presetBank) {
       const b = e.target.closest('[data-t]'); if (!b) return;
       f.type = b.dataset.t; press($('#exType'), 'data-t', f.type);
       $('#exCatBox').hidden = f.type === 'in';
+      $('#exMethodBox').hidden = f.type === 'in';
       $('#exIcon').textContent = f.type === 'in' ? '💵' : '💸';
     });
     $('#exCat').addEventListener('click', e => { const b = e.target.closest('[data-c]'); if (!b) return; f.cat = f.cat === b.dataset.c ? '' : b.dataset.c; press($('#exCat'), 'data-c', f.cat); });
     $('#exBank').addEventListener('click', e => { const b = e.target.closest('[data-b]'); if (!b) return; f.bank = f.bank === b.dataset.b ? '' : b.dataset.b; press($('#exBank'), 'data-b', f.bank); });
+    $('#exMethod').addEventListener('click', e => {
+      const b = e.target.closest('[data-m]'); if (!b) return;
+      f.method = f.method === b.dataset.m ? '' : b.dataset.m; press($('#exMethod'), 'data-m', f.method);
+      if (f.method === 'card') { f.bank = 'shinhan'; press($('#exBank'), 'data-b', 'shinhan'); }
+      if (f.method === 'cash') { f.bank = 'cash'; press($('#exBank'), 'data-b', 'cash'); }
+    });
     $('#exDel')?.addEventListener('click', async () => {
       const items = clone(S.spend[mk].items);
       Object.assign(items.find(x => x.id === id), { removed: true, removedAt: new Date().toISOString() });
@@ -801,7 +1118,7 @@ function expenseSheet(mk, id, presetBank) {
       const nk = date.slice(0, 7);
       const fill = x => {
         Object.assign(x, { amount, title, date });
-        if (f.type === 'in') { x.type = 'in'; delete x.cat; } else { delete x.type; if (f.cat) x.cat = f.cat; else delete x.cat; }
+        if (f.type === 'in') { x.type = 'in'; delete x.cat; delete x.method; } else { delete x.type; if (f.cat) x.cat = f.cat; else delete x.cat; if (f.method) x.method = f.method; else delete x.method; }
         if (f.bank) x.bank = f.bank; else delete x.bank;
         return x;
       };
@@ -1444,6 +1761,12 @@ $view.addEventListener('click', e => {
   const addEx = e.target.closest('[data-add-expense]');
   if (addEx) { expenseSheet(addEx.dataset.addExpense || TODAY.slice(0, 7), null); return; }
   if (e.target.closest('[data-bal-all]')) { balanceAllSheet(); return; }
+  if (e.target.closest('[data-savings]')) { savingsSheet(); return; }
+  if (e.target.closest('[data-stock]')) { stockSheet(); return; }
+  const ac = e.target.closest('[data-add-card]');
+  if (ac) { expenseSheet(ac.dataset.addCard === TODAY.slice(0, 7) ? ac.dataset.addCard : TODAY.slice(0, 7), null, 'shinhan', 'card'); return; }
+  const cs = e.target.closest('[data-card-sort]');
+  if (cs) { cardSortSheet(cs.dataset.cardSort); return; }
   if (e.target.closest('[data-capture]')) { $file.click(); return; }
   const exp = e.target.closest('[data-exp]');
   if (exp) { const [mk, id] = exp.dataset.exp.split('|'); expenseSheet(mk, id); return; }
@@ -1452,6 +1775,37 @@ $view.addEventListener('click', e => {
   const bk = e.target.closest('[data-backup]');
   if (bk) { backup(bk); return; }
 });
+let cardDrag = null;
+$view.addEventListener('pointerdown', e => {
+  const c = e.target.closest('[data-card3d]');
+  if (!c) return;
+  cardDrag = c;
+  c.classList.add('held');
+  c.setPointerCapture?.(e.pointerId);
+});
+$view.addEventListener('pointermove', e => {
+  const c = cardDrag || (e.pointerType === 'mouse' ? e.target.closest('[data-card3d]') : null);
+  if (!c) return;
+  const r = c.getBoundingClientRect();
+  const px = Math.max(-0.5, Math.min(0.5, (e.clientX - r.left) / r.width - 0.5));
+  const py = Math.max(-0.5, Math.min(0.5, (e.clientY - r.top) / r.height - 0.5));
+  c.classList.add('held');
+  c.style.setProperty('--ry', `${px * 34}deg`);
+  c.style.setProperty('--rx', `${-py * 30}deg`);
+  c.style.setProperty('--gx', `${(px + 0.5) * 100}%`);
+  c.style.setProperty('--gy', `${(py + 0.5) * 100}%`);
+}, { passive: true });
+const releaseCard = e => {
+  const c = cardDrag || e.target.closest?.('[data-card3d]');
+  if (!c) return;
+  cardDrag = null;
+  c.classList.remove('held');
+  ['--rx', '--ry', '--gx', '--gy'].forEach(k => c.style.removeProperty(k));
+};
+$view.addEventListener('pointerup', releaseCard);
+$view.addEventListener('pointercancel', releaseCard);
+$view.addEventListener('pointerout', e => { if (!cardDrag && e.pointerType === 'mouse' && e.target.closest('[data-card3d]') && !e.relatedTarget?.closest?.('[data-card3d]')) releaseCard(e); });
+
 $view.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('qcard')) { e.preventDefault(); e.target.click(); }
 });
@@ -1478,7 +1832,7 @@ function instructions() {
 - 기록을 바꿀 때는 반드시 도구를 써. 도구가 성공하지 않았으면 했다고 말하지 마.
 - 사용자가 말하지 않은 내용을 지어내지 마. 날짜나 양이 애매하면 넣기 전에 물어봐.
 - '오늘', '내일', '토요일' 같은 말은 아래 날짜를 기준으로 YYYY-MM-DD로 바꿔.
-- 돈을 썼다고 하면 add_expense로 날짜·금액·내용을 기록해. 통장을 말하면 bank에 넣어.
+- 돈을 썼다고 하면 add_expense로 날짜·금액·내용을 기록해. 카드로 긁었으면 method '나라사랑카드'. 통장을 말하면 bank에 넣어.
 - 시간이 걸리는 할 일은 minutes(분)에, 개수 같은 양은 amount에 넣어. 사이트 개발은 kind "dev", 운동은 kind "workout", 감사한 점 3개는 kind "thanks".
 - 감사한 점은 그날 자정 전까지만 적을 수 있고, 지나면 탈락이야.
 - 앱 화면이나 기능을 고치는 일은 네 일이 아니야. 그런 요청이면 코딩은 대화 밖 개발 세션에서 한다고 알려줘.
@@ -1489,6 +1843,9 @@ function instructions() {
 오늘 운동 부위: ${partOf(TODAY)}, 내일 운동 부위: ${partOf(tk)}
 주간 운동 루틴: ${split}
 돈: 월급날 매달 ${S.money.payday}일, 적금 ${manwon(S.money.savings)} 자동이체, 한 달 쓸 수 있는 돈 ${manwon(S.money.spend)}, 잔액 ${bal}
+통장 역할: 농협=월급 통장, 신한=나라사랑 통장(나라사랑카드), 카카오뱅크=따로 모으는 돈. 쓸 수 있는 돈 = 농협 + 신한.
+군적금: ${savPlan().accts.map(a => `${a.short} ${won(a.bal)}(매달 ${manwon(a.monthly)})`).join(', ') || '없음'}, 만기 예상 ${won(savPlan().payout)} (매달 ${S.savings.payday}일 자동 입금, 앱이 알아서 채움)
+주식: ${stockSum().rows.map(r => `${r.name} ${r.qty}주 평균 ${won(r.avg)} 현재가 ${r.price != null ? won(r.price) : '미입력'}`).join(', ') || '없음'} (현재가를 말하면 set_stock)
 이번 달(${mk}) 쓴 돈 합계 ${won(spentIn(mk))}, 최근 내역: ${JSON.stringify(recentSpend)}
 지출은 add_expense(분류: ${CATS.map(c => c.name).join(', ')}), 들어온 돈은 add_income으로 기록해. 기록은 지우지 않고 숨기기만 해.
 사진이 오면: 은행·카드 앱 화면이면 보이는 통장 잔액은 set_balance로, 거래는 add_expense/add_income으로 넣어. 최근 내역에 이미 있는 거래(같은 날짜·금액)는 다시 넣지 마. 화면이 흐리거나 확실하지 않은 숫자는 넣지 말고 물어봐. 넣은 것을 한 줄씩 알려줘.`;
@@ -1651,6 +2008,7 @@ function makeTools(before, acts) {
       inputSchema: { type: 'object', properties: {
         date: { type: 'string' }, amount: { type: 'number' }, title: { type: 'string' }, bank: { type: 'string', enum: [...BANKS.map(b => b.name), '현금'] },
         category: { type: 'string', enum: CATS.map(c => c.name) },
+        method: { type: 'string', enum: ['나라사랑카드', '계좌이체', '현금'], description: '나라사랑카드면 신한 카드 사용으로 기록' },
       }, required: ['date', 'amount', 'title'] },
       execute: async input => {
         const d = needDate(input.date), amt = Math.round(Number(input.amount));
@@ -1663,9 +2021,35 @@ function makeTools(before, acts) {
         if (bank) item.bank = bank;
         const cat = CATS.find(c => c.name === input.category || c.id === input.category);
         if (cat) item.cat = cat.id;
+        const method = { '나라사랑카드': 'card', '계좌이체': 'transfer', '현금': 'cash' }[input.method];
+        if (method) item.method = method;
+        if (method === 'card') item.bank = 'shinhan';
+        if (method === 'cash') item.bank = 'cash';
         await putSpend(mk, [...clone(S.spend[mk]?.items || []), item]);
         acts.push(`${dotDate(d)} 지출 ${title} ${won(amt)}`);
         return { ok: true, id: item.id, monthTotal: spentIn(mk) };
+      },
+    },
+    {
+      name: 'set_stock',
+      description: 'Updates a stock holding by name: current price (won per share), quantity, or average buy price. Creates the holding if it does not exist (needs qty and avg).',
+      inputSchema: { type: 'object', properties: { name: { type: 'string' }, price: { type: 'number' }, qty: { type: 'number' }, avg: { type: 'number' } }, required: ['name'] },
+      execute: async input => {
+        keep('stocks/main', S.stocks);
+        const st = clone(S.stocks), now = new Date().toISOString();
+        let h = (st.holdings || []).find(x => !x.removed && x.name === String(input.name).trim());
+        if (!h) {
+          if (!(input.qty > 0 && input.avg > 0)) throw new Error('새 종목은 qty와 avg가 필요해요');
+          h = { id: newId(), name: String(input.name).trim().slice(0, 20), qty: Math.round(input.qty), avg: Math.round(input.avg), price: null, priceAt: null, history: [], at: now };
+          st.holdings = [...(st.holdings || []), h];
+        }
+        if (input.price > 0) { h.price = Math.round(input.price); h.priceAt = now; h.history = [...(h.history || []), { at: now, price: h.price }]; }
+        if (input.qty > 0 && input.qty !== h.qty) { h.changes = [...(h.changes || []), { at: now, qty: h.qty, avg: h.avg }]; h.qty = Math.round(input.qty); }
+        if (input.avg > 0 && input.avg !== h.avg) { h.avg = Math.round(input.avg); }
+        await putStocks(st);
+        acts.push(`주식 ${h.name}${input.price > 0 ? ` 현재가 ${won(h.price)}` : ''}`);
+        const r = stockSum().rows.find(x => x.id === h.id);
+        return { ok: true, pnl: r?.pnl, rate: r?.rate };
       },
     },
     {
