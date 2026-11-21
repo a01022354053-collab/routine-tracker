@@ -4,7 +4,7 @@
 
 ## 어디서 돌아가나
 같은 화면 코드(`artifact/`)가 두 곳에서 돈다. 기록은 두 곳이 따로 가진다(구조는 같다).
-- **웹** https://leeseung06.kro.kr — 사용자 한 사람만 쓰는 사이트(가입·이메일 없음). Vercel이 `main` 브랜치를 빌드한다(Next.js 16, `node_modules/next/dist/docs/`를 먼저 읽을 것). 들어가기 = 비밀번호 하나(Vercel 환경 변수 `APP_PASSWORD`), 맞추면 1년짜리 httpOnly 쿠키, 8번 틀리면 10분 잠김. 기록은 Supabase 표 `daily_docs`(`supabase/schema.sql`, RLS 켜고 정책 없음 → 브라우저는 못 붙고 서버만 비밀 키로). Vercel 환경 변수: `APP_PASSWORD`, `NEXT_PUBLIC_SUPABASE_URL`(또는 `SUPABASE_URL`), `SUPABASE_SECRET_KEY`(또는 `SUPABASE_SERVICE_ROLE_KEY`), `ANTHROPIC_API_KEY`(매니저).
+- **웹** https://leeseung06.kro.kr — 사용자 한 사람만 쓰는 사이트(가입·이메일 없음). Vercel이 `main` 브랜치를 빌드한다(Next.js 16, `node_modules/next/dist/docs/`를 먼저 읽을 것). 들어가기 = 비밀번호 하나(Vercel 환경 변수 `APP_PASSWORD`), 맞추면 1년짜리 httpOnly 쿠키, 8번 틀리면 10분 잠김. 기록은 Supabase 표 `daily_docs`(`supabase/schema.sql`, RLS 켜고 정책 없음 → 브라우저는 못 붙고 서버만 비밀 키로). Vercel 환경 변수: `APP_PASSWORD`, `NEXT_PUBLIC_SUPABASE_URL`(또는 `SUPABASE_URL`), `SUPABASE_SECRET_KEY`(또는 `SUPABASE_SERVICE_ROLE_KEY`), 매니저용 `OPENAI_API_KEY`(ChatGPT, 모델은 `OPENAI_MODEL`, 기본 gpt-5.4-mini) — 없고 `ANTHROPIC_API_KEY`가 있으면 Claude.
 - **Claude 아티팩트**(비공개, 사용자만 열 수 있음): https://claude.ai/artifact/GAtreHbyjVG2J54DC15riv — 기록은 아티팩트 저장소(db). 직접 읽거나 고칠 때는 `ArtifactData` 도구(사용자가 부탁할 때만).
 - 아티팩트 기록을 웹으로 옮길 때: 저장소 화면 '내려받기'(또는 `ArtifactData`로 모은 같은 모양 JSON) → 웹 저장소 화면 '백업 불러오기'. 같은 경로에 다른 기록이 있으면 덮어쓰기 전 내용을 `restored/<시각>`에 남긴다.
 - 루트 `index.html`은 예전 GitHub Pages용으로 아티팩트로 넘겨주는 페이지다.
@@ -13,7 +13,7 @@
 ## 코드
 - 화면(두 곳 공통): `artifact/index.html` 본문(doctype/head/body 없이 쓴다). `artifact/assets/app.js` 화면·저장·매니저 도구, `artifact/assets/fx.js` 배경 애니메이션, `artifact/assets/style.css`. 루트에 `app/` 폴더를 만들면 Next.js가 `src/app`을 무시하니 만들지 않는다.
 - 웹 전용: `web/web.js`는 `window.claude`가 없을 때(웹) 같은 모양의 `window.claude`를 만든다 — db → `/api/db`(문서 경로 = `path`, 컬렉션 = `col`, 화면 복귀·30초마다 다시 읽기, 지우기 없음), sample → `/api/manager`(도구는 브라우저가 실행, 최대 8번 왕복, 사진은 줄여서 JPEG), downloads → 브라우저 내려받기. 비밀번호 화면(401이면 다시 묻고 이어서 함), 백업 불러오기(`window.__webRestore`), 로그아웃(`window.__webSignOut`)도 여기. `web/web.css`는 비밀번호 화면. app.js에서 웹에서만 할 일은 `window.__webMode`로 가른다(저장소 화면의 불러오기·로그아웃, 돈 관리 화면을 열면 `/api/quote`로 시세 갱신 10분에 한 번).
-- 서버(`src/lib/server.ts`에 쿠키 서명·Supabase 연결): `api/session`(들어와 있는지, 빠진 환경 변수 이름), `api/login`·`api/logout`, `api/db`(기록 읽기·쓰기, `_`로 시작하는 경로는 막음 — `_auth/login`은 틀린 횟수), `api/quote`(네이버 시세, `tools/stock-quote.sh`와 같은 규칙), `api/manager`(`@anthropic-ai/sdk`로 Claude 호출, 서버 쪽 거절 대비 fallbacks 켬). 모두 쿠키가 있어야 한다.
+- 서버(`src/lib/server.ts`에 쿠키 서명·Supabase 연결): `api/session`(들어와 있는지, 빠진 환경 변수 이름), `api/login`·`api/logout`, `api/db`(기록 읽기·쓰기, `_`로 시작하는 경로는 막음 — `_auth/login`은 틀린 횟수), `api/quote`(네이버 시세, `tools/stock-quote.sh`와 같은 규칙), `api/manager`(`OPENAI_API_KEY`가 있으면 `openai` SDK로 ChatGPT, 아니면 `@anthropic-ai/sdk`로 Claude. 브라우저와는 text·image·tool_use·tool_result 블록 모양으로 주고받고, ChatGPT와는 서버에서 바꿔 준다). 모두 쿠키가 있어야 한다.
 - 웹 빌드: `npm run build`/`npm run dev` 전에 `tools/build-web.mjs`가 `artifact/`를 `public/`(index.html·assets·private·web·vendor, .gitignore)로 옮기고 본문을 완전한 HTML로 감싼다. `/`는 `next.config.ts` rewrite로 `public/index.html`. 글꼴은 `artifact/fonts/`가 있으면 그것, 없으면(Vercel) CDN(Pretendard·Tossface jsDelivr).
 - 글꼴은 `tools/fetch-fonts.sh`로 `artifact/fonts/`에 받는다(저장소에 넣지 않음). 아티팩트에는 이미 올라가 있어서, 코드만 고쳤으면 바뀐 파일만 `files`로 다시 올리면 된다.
 - 아티팩트 다시 올리기: Artifact 도구로 `file_path: artifact/index.html`, `url`은 위 주소, 바뀐 파일만 `files`에 (예: `{"assets/app.js": "artifact/assets/app.js"}`). `capabilities`는 생략해서 그대로 둔다(지금: db 규칙 소유자만 읽기·쓰기, sample(사진 포함), downloads). 웹은 `main`에 올리면 Vercel이 다시 배포한다.

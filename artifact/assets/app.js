@@ -2640,6 +2640,7 @@ async function send() {
     failed = e?.code === 'cancelled' ? '멈췄어요.'
       : e?.code === 'not_granted' ? '매니저를 쓰도록 허용해야 대화할 수 있어요.'
       : e?.code === 'rate_limited' ? '지금은 너무 많이 불렀어요. 조금 뒤에 다시 말해 주세요.'
+      : window.__webMode && e?.message && (e.code === 'sampling_disabled' || e.code === 'upstream_error') ? `매니저를 부르지 못했어요. ${e.message}`
       : e?.code === 'sampling_disabled' ? '이 계정에서는 매니저를 부를 수 없어요.'
       : e?.code === 'image_rejected' ? '이 사진은 읽을 수 없어요. 다른 캡처로 다시 보내 주세요.'
       : e?.code === 'images_unavailable' ? '이 화면에서는 사진을 보낼 수 없어요.'

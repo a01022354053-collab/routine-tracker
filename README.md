@@ -4,12 +4,12 @@
 
 - 웹: https://leeseung06.kro.kr (Vercel, Next.js + Supabase)
 - 화면 코드는 `artifact/` 한 곳에 있고, 같은 코드가 Claude 아티팩트와 웹 두 곳에서 돈다.
-  - 웹에서는 `web/web.js`가 저장소(`/api/db` → Supabase)·매니저(Anthropic API)·내려받기를 대신한다.
+  - 웹에서는 `web/web.js`가 저장소(`/api/db` → Supabase)·매니저(ChatGPT API)·내려받기를 대신한다.
   - 주인 한 사람만 쓰는 사이트라 가입이 없고, 비밀번호(`APP_PASSWORD`) 하나로 들어간다.
   - `npm run build`/`npm run dev` 전에 `tools/build-web.mjs`가 화면을 `public/`으로 옮긴다.
 - 서버 기능: `src/app/api/` (비밀번호 확인, 기록 저장소, 매니저 대화, 주식 시세)
 - DB 준비: Supabase SQL Editor에서 `supabase/schema.sql`을 한 번 실행
-- Vercel 환경 변수: `APP_PASSWORD`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`
+- Vercel 환경 변수: `APP_PASSWORD`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `OPENAI_API_KEY`(선택 `OPENAI_MODEL`)
 
 ```bash
 npm install
