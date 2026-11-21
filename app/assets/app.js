@@ -74,7 +74,8 @@ const rawTodos = date => S.days[date]?.todos || [];               // 숨긴 것�
 const todosOf = date => rawTodos(date).filter(t => !t.removed);   // 화면에 보이는 것
 const monthKey = (y, m) => `${y}-${pad(m + 1)}`;
 const spendOf = mk => (S.spend[mk]?.items || []).filter(x => !x.removed);
-const spentIn = mk => spendOf(mk).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+const spentIn = mk => spendOf(mk).filter(x => x.type !== 'in').reduce((s, x) => s + (Number(x.amount) || 0), 0);
+const incomeIn = mk => spendOf(mk).filter(x => x.type === 'in').reduce((s, x) => s + (Number(x.amount) || 0), 0);
 const allChat = () => Object.keys(S.chatDays).sort().flatMap(d => S.chatDays[d]?.messages || []);
 const xpOfTask = t => t.minutes || 30;
 const isFailed = (t, date) => t.kind === 'thanks' && !t.done && date < TODAY;
@@ -181,6 +182,7 @@ function addBalHist(bankId, amount) {
 async function setBalance(bankId, amount) {
   const money = clone(S.money);
   money.balances[bankId] = amount;
+  money.balanceAt = { ...(money.balanceAt || {}), [bankId]: new Date().toISOString() };
   await putMoney(money);
   addBalHist(bankId, amount);
   const b = BANKS.find(x => x.id === bankId);
@@ -195,6 +197,13 @@ async function connect() {
   ]);
   SAMPLE = sample;
   UI.sample = !!sample;
+  // 사진을 보낼 수 있는 화면이면 캡처로 넣기 버튼을 켠다
+  sample?.limits?.().then(l => {
+    UI.imgOK = !!l?.images;
+    document.getElementById('chatAttach').hidden = !UI.imgOK;
+    if (UI.imgOK && l.images.mediaTypes) $file.accept = l.images.mediaTypes.join(',');
+    if (UI.view === 'money') refresh();
+  }).catch(() => {});
   if (!db) { UI.status = 'nodb'; refresh(true); return; }
   DB = db;
   const slow = setTimeout(() => { if (UI.status === 'loading') { UI.status = 'slow'; refresh(true); } }, 10000);
@@ -316,6 +325,7 @@ const ICON = {
   starPlain: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>',
 };
 const starSVG = (cls, style = '') => `<svg class="${cls}" style="${style}" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>`;
+const wonAttr = n => (UI.still ? `>${won(n)}` : ` data-count="${n}" data-suffix="원" data-fmt="won">0원`);
 const countAttr = (n, suf = '') => (UI.still ? `>${n}${suf}` : ` data-count="${n}" data-suffix="${suf}">0${suf}`);
 
 function ringHTML(rate) {
@@ -574,72 +584,105 @@ function payInfo() {
   return { next, left, pct: Math.min(100, Math.round((passed / span) * 100)) };
 }
 
+// 토스처럼: 내 자산(통장별 잔액) → 이번 달 소비(예산·분류) → 월급날 → 입출금 내역
+const CATS = [
+  { id: 'food', name: '식비', emoji: '🍚', c: 'var(--orange)' },
+  { id: 'snack', name: '간식', emoji: '🍫', c: 'var(--pink)' },
+  { id: 'life', name: '생활', emoji: '🧴', c: 'var(--cyan)' },
+  { id: 'move', name: '교통', emoji: '🚌', c: 'var(--lime)' },
+  { id: 'shop', name: '쇼핑', emoji: '🛍️', c: 'var(--violet)' },
+  { id: 'phone', name: '통신', emoji: '📱', c: 'var(--yellow)' },
+  { id: 'fun', name: '여가', emoji: '🎮', c: '#5b8cff' },
+  { id: 'etc', name: '기타', emoji: '💸', c: 'var(--ink-3)' },
+];
+const catOf = id => CATS.find(c => c.id === id) || CATS[CATS.length - 1];
+const bankName = id => (id === 'cash' ? '현금' : BANKS.find(b => b.id === id)?.name || '');
+function ago(iso) {
+  if (!iso) return '아직 입력 안 함';
+  const t = new Date(iso), days = Math.floor((new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate()) - new Date(t.getFullYear(), t.getMonth(), t.getDate())) / 86400000);
+  return days <= 0 ? `오늘 ${pad(t.getHours())}:${pad(t.getMinutes())} 입력` : days === 1 ? '어제 입력' : `${days}일 전 입력`;
+}
+
 function viewMoney() {
   const M = S.money, p = payInfo();
   const known = BANKS.filter(b => M.balances[b.id] != null);
   const sum = known.reduce((s, b) => s + Number(M.balances[b.id] || 0), 0);
-  const both = (M.savings || 0) + (M.spend || 0) || 1;
   return `
     <div class="view-title anim" style="--i:0">${ICON.star}<h1>돈 관리</h1></div>
     ${ready() ? '' : statusPanel(1)}
     <div class="money-grid">
-      <section class="panel pay anim" style="--i:1">
-        <span class="eyebrow">월급날 · 매달 ${M.payday}일</span>
-        <div class="dday">${p.left === 0 ? 'D-DAY' : `D-${p.left}`}</div>
-        <span class="sub num">${p.next.getMonth() + 1}월 ${p.next.getDate()}일 ${DAY[p.next.getDay()]}요일</span>
+      <section class="panel asset anim" style="--i:1">
+        <div class="asset-top"><span class="eyebrow">내 자산</span><button class="chip soft" data-bal-all>잔액 한 번에 입력</button></div>
+        <div class="asset-sum disp num"${known.length ? wonAttr(sum) : '>–'}</div>
+        <span class="asset-sub">${known.length < BANKS.length ? `통장 ${BANKS.length}개 중 ${known.length}개 입력됨` : `통장 ${BANKS.length}개 합계`}</span>
+        <div class="acct-list">${BANKS.map(b => {
+          const v = M.balances[b.id];
+          return `<button class="acct-row" data-acct="${b.id}" style="--b:${b.color}">
+            <span class="bank">${b.short}</span>
+            <span class="who"><b>${b.name}</b><small>${ago(M.balanceAt?.[b.id])}</small></span>
+            <span class="bal num${v == null ? ' none' : ''}">${v == null ? '입력하기' : won(v)}</span>
+            ${ICON.next}
+          </button>`;
+        }).join('')}</div>
+        ${UI.imgOK ? '<button class="btn ghost cap" data-capture><span class="emoji" aria-hidden="true">📷</span> 은행 앱 캡처로 넣기</button>' : ''}
+        ${balHistHTML()}
+      </section>
+      ${spendHTML(2)}
+      <section class="panel pay anim" style="--i:3">
+        <div class="pay-top">
+          <div><span class="eyebrow">월급날 · 매달 ${M.payday}일</span>
+            <div class="dday">${p.left === 0 ? 'D-DAY' : `D-${p.left}`}</div>
+            <span class="sub num">${p.next.getMonth() + 1}월 ${p.next.getDate()}일 ${DAY[p.next.getDay()]}요일</span></div>
+        </div>
         <div class="cycle" role="img" aria-label="월급 주기 ${p.pct}% 지남"><i style="width:${p.pct}%"></i></div>
-      </section>
-      <section class="panel anim" style="--i:2">
-        <div class="sh-sec">
-          <span class="eyebrow">월급 쓰는 법</span>
-          <div class="splitbar" role="img" aria-label="적금과 쓸 돈 비율">
-            <i style="flex:${M.savings}; background: var(--cyan)"></i><i style="flex:${M.spend}; background: var(--yellow)"></i>
-          </div>
-          <div class="plan-rows">
-            <div class="plan-row"><span class="tile"><span class="emoji" aria-hidden="true">🏦</span></span><div><b>적금</b><small>월급날 자동이체</small></div><span class="amt num" style="color:var(--cyan)">${manwon(M.savings)}</span></div>
-            <div class="plan-row"><span class="tile"><span class="emoji" aria-hidden="true">💳</span></span><div><b>쓸 수 있는 돈</b><small>한 달 실제 사용</small></div><span class="amt num" style="color:var(--yellow)">${manwon(M.spend)}</span></div>
-          </div>
+        <div class="plan-rows">
+          <div class="plan-row"><span class="tile"><span class="emoji" aria-hidden="true">🏦</span></span><div><b>적금</b><small>월급날 자동이체</small></div><span class="amt num" style="color:var(--cyan)">${manwon(M.savings)}</span></div>
+          <div class="plan-row"><span class="tile"><span class="emoji" aria-hidden="true">💳</span></span><div><b>쓸 수 있는 돈</b><small>한 달 실제 사용</small></div><span class="amt num" style="color:var(--yellow)">${manwon(M.spend)}</span></div>
         </div>
       </section>
-      ${spendHTML(4)}
-      <section class="panel anim wide" style="--i:3">
-        <div class="sh-sec">
-          <div class="total"><span class="eyebrow">통장 잔액${known.length < BANKS.length ? ` · ${known.length}/${BANKS.length}개 입력` : ''}</span><b class="num">${known.length ? won(sum) : '–'}</b></div>
-          <div class="accts">${BANKS.map(b => {
-            const v = M.balances[b.id];
-            return `<button class="panel acct tilt" data-acct="${b.id}" style="--b:${b.color}">
-              <span class="bank">${b.short}</span>
-              <div><b>${b.name}</b><small>눌러서 잔액 입력</small></div>
-              <span class="bal num${v == null ? ' none' : ''}">${v == null ? '아직 없음' : won(v)}</span>
-            </button>`;
-          }).join('')}</div>
-          ${balHistHTML()}
-        </div>
-      </section>
+      ${txHTML(4)}
     </div>`;
 }
 
-const bankName = id => (id === 'cash' ? '현금' : BANKS.find(b => b.id === id)?.name || '');
-
 function spendHTML(i) {
-  const mk = monthKey(UI.my, UI.mm), items = spendOf(mk);
-  const total = spentIn(mk), budget = S.money.spend || 0;
+  const mk = monthKey(UI.my, UI.mm), out = spendOf(mk).filter(x => x.type !== 'in');
+  const total = spentIn(mk), income = incomeIn(mk), budget = S.money.spend || 0;
   const left = budget - total, pct = budget ? Math.min(100, Math.round((total / budget) * 100)) : 0;
-  const isNow = mk === TODAY.slice(0, 7);
-  const byDay = {};
-  items.forEach(x => (byDay[x.date] = byDay[x.date] || []).push(x));
-  const days = Object.keys(byDay).sort().reverse();
-  return `<section class="panel anim wide spend" style="--i:${i}">
-    <div class="map-head" style="margin:0">${monthNav(UI.my, UI.mm, 'money')}${isNow ? '<button class="chip" data-add-expense>+ 지출 기록</button>' : ''}</div>
+  const byCat = {};
+  out.forEach(x => { byCat[x.cat || 'etc'] = (byCat[x.cat || 'etc'] || 0) + x.amount; });
+  const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+  return `<section class="panel anim spend" style="--i:${i}">
+    <div class="map-head" style="margin:0">${monthNav(UI.my, UI.mm, 'money')}</div>
     <div class="spend-top">
-      <div><span class="eyebrow">${UI.mm + 1}월에 쓴 돈</span><div class="spent num">${won(total)}</div></div>
+      <div><span class="eyebrow">${UI.mm + 1}월 소비</span><div class="spent num"${wonAttr(total)}</div></div>
       <div class="left num ${left < 0 ? 'over' : ''}">${budget ? (left >= 0 ? `${won(left)} 남음` : `${won(-left)} 넘음`) : ''}<small>${budget ? `${manwon(budget)} 중` : ''}</small></div>
     </div>
     <div class="cycle spendbar ${left < 0 ? 'over' : ''}" role="img" aria-label="쓸 돈의 ${pct}% 사용"><i style="width:${pct}%"></i></div>
-    ${days.length ? `<div class="exp-days">${days.map(d => `
-      <div class="exp-day"><div class="exp-date"><b class="disp">${dotDate(d)}</b><span>${dowOf(d)}</span><span class="num">${won(byDay[d].reduce((s, x) => s + x.amount, 0))}</span></div>
-        ${byDay[d].map(x => `<button class="exp" data-exp="${mk}|${esc(x.id)}"><span class="t">${esc(x.title)}</span>${x.bank ? `<span class="chip soft">${bankName(x.bank)}</span>` : ''}<span class="a num">${won(x.amount)}</span></button>`).join('')}
-      </div>`).join('')}</div>` : `<p class="empty">${isNow ? '아직 기록한 지출이 없어요' : '이 달에는 지출 기록이 없어요'}</p>`}
+    ${cats.length ? `<div class="catbar" role="img" aria-label="분류별 소비">${cats.map(([c, v]) => `<i style="flex:${v}; background:${catOf(c).c}"></i>`).join('')}</div>
+      <div class="cat-list">${cats.map(([c, v]) => `<div class="cat-row"><span class="emoji" aria-hidden="true">${catOf(c).emoji}</span><b>${catOf(c).name}</b><span class="pct num">${Math.round((v / total) * 100)}%</span><span class="num">${won(v)}</span></div>`).join('')}</div>` : ''}
+    ${income ? `<div class="income-row"><span>${UI.mm + 1}월에 들어온 돈</span><b class="num">+${won(income)}</b></div>` : ''}
+  </section>`;
+}
+
+function txHTML(i) {
+  const mk = monthKey(UI.my, UI.mm), items = spendOf(mk);
+  const byDay = {};
+  items.forEach(x => (byDay[x.date] = byDay[x.date] || []).push(x));
+  const days = Object.keys(byDay).sort().reverse();
+  return `<section class="panel anim wide tx" style="--i:${i}">
+    <div class="tx-head"><h2>${UI.mm + 1}월 내역</h2><button class="chip" data-add-expense="${mk}">+ 기록</button></div>
+    ${days.length ? days.map(d => `
+      <div class="tx-day"><div class="tx-date"><b>${dotDate(d)} ${DAY[parseKey(d).getDay()]}</b></div>
+        ${byDay[d].slice().reverse().map(x => {
+          const inc = x.type === 'in', c = inc ? { emoji: '💵', name: '입금' } : catOf(x.cat);
+          const sub = [bankName(x.bank), c.name].filter(Boolean).join(' · ');
+          return `<button class="tx-row" data-exp="${mk}|${esc(x.id)}">
+            <span class="tile"><span class="emoji" aria-hidden="true">${c.emoji}</span></span>
+            <span class="who"><b>${esc(x.title)}</b><small>${esc(sub)}</small></span>
+            <span class="amt num ${inc ? 'in' : ''}">${inc ? '+' : '-'}${won(x.amount)}</span>
+          </button>`;
+        }).join('')}
+      </div>`).join('') : `<p class="empty">${mk === TODAY.slice(0, 7) ? '아직 기록한 내역이 없어요' : '이 달에는 내역이 없어요'}</p>`}
   </section>`;
 }
 
@@ -650,59 +693,94 @@ function balHistHTML() {
     <ul>${items.map(x => { const t = new Date(x.at); return `<li><span class="tm num">${pad(t.getMonth() + 1)}.${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}</span><span class="tx">${bankName(x.bank)} ${x.amount == null ? '지움' : won(x.amount)}</span></li>`; }).join('')}</ul></details>`;
 }
 
+// 통장 셋을 한 화면에서 입력
+function balanceAllSheet() {
+  openSheet(`<div class="sh-head" style="--c:var(--lime)"><span class="q-icon"><span class="emoji" aria-hidden="true">🏦</span></span>
+      <div><h3>잔액 한 번에 입력</h3><p>바뀐 통장만 고쳐도 돼요</p></div></div>
+    <div class="sh-sec">${BANKS.map(b => `
+      <label class="bal-in" style="--b:${b.color}"><span class="bank">${b.short}</span><b>${b.name}</b>
+        <span class="numfield"><input class="field" data-bal="${b.id}" inputmode="numeric" placeholder="0" value="${S.money.balances[b.id] ?? ''}"><span>원</span></span></label>`).join('')}
+    </div>
+    <button class="btn" id="balAllSave">저장</button>`, body => {
+    body.querySelectorAll('[data-bal]').forEach(i => i.addEventListener('input', () => { i.value = i.value.replace(/[^\d]/g, ''); }));
+    body.querySelector('#balAllSave').addEventListener('click', async () => {
+      try {
+        let n = 0;
+        for (const i of body.querySelectorAll('[data-bal]')) {
+          const v = i.value.trim() === '' ? null : Number(i.value);
+          if (v !== (S.money.balances[i.dataset.bal] ?? null)) { await setBalance(i.dataset.bal, v); n++; }
+        }
+        toast(n ? `통장 ${n}개 잔액을 저장했어요` : '바뀐 잔액이 없어요');
+        closeSheet();
+      } catch (e) { saveFail(); }
+    });
+  });
+}
+
+// 지출·입금 기록하기/고치기
 function expenseSheet(mk, id) {
   const cur = id ? (S.spend[mk]?.items || []).find(x => x.id === id) : null;
   const banks = [...BANKS.map(b => ({ id: b.id, name: b.name })), { id: 'cash', name: '현금' }];
-  let bank = cur?.bank || '';
-  openSheet(`<div class="sh-head" style="--c:var(--lime)"><span class="q-icon"><span class="emoji" aria-hidden="true">💸</span></span>
-      <div><h3>${cur ? '지출 고치기' : '지출 기록'}</h3><p>${cur ? `${dotDate(cur.date)} 기록` : '쓴 돈을 남겨 두면 달마다 모여요'}</p></div></div>
+  const f = { type: cur?.type === 'in' ? 'in' : 'out', bank: cur?.bank || '', cat: cur?.cat || '' };
+  const defDate = cur?.date || (mk === TODAY.slice(0, 7) ? TODAY : `${mk}-01`);
+  openSheet(`<div class="sh-head" style="--c:var(--lime)"><span class="q-icon"><span class="emoji" aria-hidden="true" id="exIcon">${f.type === 'in' ? '💵' : '💸'}</span></span>
+      <div><h3>${cur ? '내역 고치기' : '내역 기록'}</h3><p>${cur ? `${dotDate(cur.date)} 기록` : '기록해 두면 달마다 모여요'}</p></div></div>
+    <div class="seg" id="exType"><button data-t="out" aria-pressed="${f.type === 'out'}">나간 돈</button><button data-t="in" aria-pressed="${f.type === 'in'}">들어온 돈</button></div>
     <div class="sh-sec"><span class="label">금액</span><div class="numfield"><input class="field" id="exAmt" inputmode="numeric" placeholder="0" value="${cur ? cur.amount : ''}"><span>원</span></div></div>
     <div class="sh-sec"><span class="label">내용</span><input class="field" id="exTitle" maxlength="40" placeholder="예: PX 간식" value="${esc(cur?.title || '')}"></div>
-    <div class="sh-sec"><span class="label">날짜</span><input class="field" id="exDate" type="date" value="${cur?.date || TODAY}" max="${TODAY}"></div>
-    <div class="sh-sec"><span class="label">어디서 냈는지</span><div class="parts" id="exBank">${banks.map(b => `<button class="pchip" data-b="${b.id}" aria-pressed="${b.id === bank}">${b.name}</button>`).join('')}</div></div>
+    <div class="sh-sec" id="exCatBox" ${f.type === 'in' ? 'hidden' : ''}><span class="label">분류</span><div class="parts" id="exCat">${CATS.map(c =>
+      `<button class="pchip" data-c="${c.id}" aria-pressed="${c.id === f.cat}"><span class="emoji" aria-hidden="true">${c.emoji}</span> ${c.name}</button>`).join('')}</div></div>
+    <div class="sh-sec"><span class="label">날짜</span><input class="field" id="exDate" type="date" value="${defDate}" max="${TODAY}"></div>
+    <div class="sh-sec"><span class="label">통장</span><div class="parts" id="exBank">${banks.map(b => `<button class="pchip" data-b="${b.id}" aria-pressed="${b.id === f.bank}">${b.name}</button>`).join('')}</div></div>
     <div class="${cur ? 'btn-row' : ''}">${cur ? '<button class="btn ghost" id="exDel">기록에서 숨기기</button>' : ''}<button class="btn" id="exSave">저장</button></div>`, body => {
-    const amt = body.querySelector('#exAmt');
+    const $ = q => body.querySelector(q);
+    const press = (box, attr, val) => box.querySelectorAll(`[${attr}]`).forEach(x => x.setAttribute('aria-pressed', x.getAttribute(attr) === val));
+    const amt = $('#exAmt');
     amt.addEventListener('input', () => { amt.value = amt.value.replace(/[^\d]/g, ''); });
-    body.querySelector('#exBank').addEventListener('click', e => {
-      const b = e.target.closest('[data-b]');
-      if (!b) return;
-      bank = bank === b.dataset.b ? '' : b.dataset.b;
-      body.querySelectorAll('#exBank [data-b]').forEach(x => x.setAttribute('aria-pressed', x.dataset.b === bank));
+    $('#exType').addEventListener('click', e => {
+      const b = e.target.closest('[data-t]'); if (!b) return;
+      f.type = b.dataset.t; press($('#exType'), 'data-t', f.type);
+      $('#exCatBox').hidden = f.type === 'in';
+      $('#exIcon').textContent = f.type === 'in' ? '💵' : '💸';
     });
-    body.querySelector('#exDel')?.addEventListener('click', async () => {
+    $('#exCat').addEventListener('click', e => { const b = e.target.closest('[data-c]'); if (!b) return; f.cat = f.cat === b.dataset.c ? '' : b.dataset.c; press($('#exCat'), 'data-c', f.cat); });
+    $('#exBank').addEventListener('click', e => { const b = e.target.closest('[data-b]'); if (!b) return; f.bank = f.bank === b.dataset.b ? '' : b.dataset.b; press($('#exBank'), 'data-b', f.bank); });
+    $('#exDel')?.addEventListener('click', async () => {
       const items = clone(S.spend[mk].items);
       Object.assign(items.find(x => x.id === id), { removed: true, removedAt: new Date().toISOString() });
-      try { await putSpend(mk, items); logAct(`지출 숨김 · ${cur.title} ${won(cur.amount)} (${dotDate(cur.date)})`); toast('기록에서 숨겼어요'); closeSheet(); } catch (e) { saveFail(); }
+      try { await putSpend(mk, items); logAct(`내역 숨김 · ${cur.title} ${won(cur.amount)} (${dotDate(cur.date)})`); toast('기록에서 숨겼어요'); closeSheet(); } catch (e) { saveFail(); }
     });
-    body.querySelector('#exSave').addEventListener('click', async () => {
-      const amount = Number(amt.value), title = body.querySelector('#exTitle').value.trim() || '지출';
-      const date = isDate(body.querySelector('#exDate').value) ? body.querySelector('#exDate').value : TODAY;
+    $('#exSave').addEventListener('click', async () => {
+      const amount = Number(amt.value), title = $('#exTitle').value.trim() || (f.type === 'in' ? '입금' : '지출');
+      const date = isDate($('#exDate').value) ? $('#exDate').value : TODAY;
       if (!(amount > 0)) { toast('금액을 넣어 주세요'); amt.focus(); return; }
       const nk = date.slice(0, 7);
+      const fill = x => {
+        Object.assign(x, { amount, title, date });
+        if (f.type === 'in') { x.type = 'in'; delete x.cat; } else { delete x.type; if (f.cat) x.cat = f.cat; else delete x.cat; }
+        if (f.bank) x.bank = f.bank; else delete x.bank;
+        return x;
+      };
+      const sign = f.type === 'in' ? '+' : '-';
       try {
         if (cur) {
-          // 고치면 예전 값은 기록에 남겨 두고 새 값으로 바꾼다
+          // 고치면 예전 값은 history에 남겨 둔다
           const items = clone(S.spend[mk].items), x = items.find(i => i.id === id);
-          const prev = { amount: x.amount, title: x.title, date: x.date, bank: x.bank, at: x.editedAt || x.at };
+          const prev = { amount: x.amount, title: x.title, date: x.date, bank: x.bank, cat: x.cat, type: x.type, at: x.editedAt || x.at };
           if (nk === mk) {
-            Object.assign(x, { amount, title, date, editedAt: new Date().toISOString(), history: [...(x.history || []), prev] });
-            if (bank) x.bank = bank; else delete x.bank;
+            fill(x); x.editedAt = new Date().toISOString(); x.history = [...(x.history || []), prev];
             await putSpend(mk, items);
           } else {
             Object.assign(x, { removed: true, removedAt: new Date().toISOString(), movedTo: nk });
             await putSpend(mk, items);
-            const moved = { id: newId(), date, amount, title, at: new Date().toISOString(), history: [prev] };
-            if (bank) moved.bank = bank;
-            await putSpend(nk, [...clone(S.spend[nk]?.items || []), moved]);
+            await putSpend(nk, [...clone(S.spend[nk]?.items || []), fill({ id: newId(), at: new Date().toISOString(), history: [prev] })]);
           }
-          logAct(`지출 고침 · ${prev.title} ${won(prev.amount)} → ${title} ${won(amount)} (${dotDate(date)})`);
+          logAct(`내역 고침 · ${prev.title} ${won(prev.amount)} → ${title} ${sign}${won(amount)} (${dotDate(date)})`);
         } else {
-          const item = { id: newId(), date, amount, title, at: new Date().toISOString() };
-          if (bank) item.bank = bank;
-          await putSpend(nk, [...clone(S.spend[nk]?.items || []), item]);
-          logAct(`지출 · ${dotDate(date)} ${title} ${won(amount)}${bank ? ` (${bankName(bank)})` : ''}`);
+          await putSpend(nk, [...clone(S.spend[nk]?.items || []), fill({ id: newId(), at: new Date().toISOString() })]);
+          logAct(`${f.type === 'in' ? '입금' : '지출'} · ${dotDate(date)} ${title} ${sign}${won(amount)}${f.bank ? ` (${bankName(f.bank)})` : ''}`);
         }
-        toast('지출을 기록했어요');
+        toast('기록했어요');
         closeSheet();
       } catch (e) { saveFail(); }
     });
@@ -835,7 +913,8 @@ function countUp(root) {
     const t0 = performance.now() + 250, dur = 1100;
     const step = t => {
       const p = Math.max(0, Math.min(1, (t - t0) / dur)), e = 1 - Math.pow(1 - p, 3);
-      el.textContent = Math.round(to * e) + suf;
+      const v = Math.round(to * e);
+      el.textContent = (el.dataset.fmt === 'won' ? v.toLocaleString('ko-KR') : v) + suf;
       if (p < 1) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
@@ -1317,7 +1396,10 @@ $view.addEventListener('click', e => {
   }
   const acct = e.target.closest('[data-acct]');
   if (acct) { balanceSheet(acct.dataset.acct); return; }
-  if (e.target.closest('[data-add-expense]')) { expenseSheet(TODAY.slice(0, 7), null); return; }
+  const addEx = e.target.closest('[data-add-expense]');
+  if (addEx) { expenseSheet(addEx.dataset.addExpense || TODAY.slice(0, 7), null); return; }
+  if (e.target.closest('[data-bal-all]')) { balanceAllSheet(); return; }
+  if (e.target.closest('[data-capture]')) { $file.click(); return; }
   const exp = e.target.closest('[data-exp]');
   if (exp) { const [mk, id] = exp.dataset.exp.split('|'); expenseSheet(mk, id); return; }
   const mm = e.target.closest('[data-money-month]');
@@ -1344,7 +1426,7 @@ function instructions() {
   const split = [1, 2, 3, 4, 5, 6, 0].map(d => `${DAY[d]} ${S.split[d]}`).join(', ');
   const bal = BANKS.map(b => `${b.name} ${S.money.balances[b.id] == null ? '미입력' : won(S.money.balances[b.id])}`).join(', ');
   const mk = TODAY.slice(0, 7);
-  const recentSpend = spendOf(mk).slice(-8).map(x => ({ id: x.id, date: x.date, title: x.title, amount: x.amount }));
+  const recentSpend = spendOf(mk).slice(-15).map(x => ({ id: x.id, type: x.type === 'in' ? '입금' : '지출', date: x.date, title: x.title, amount: x.amount, bank: bankName(x.bank) || undefined }));
   return `너는 '일상 매니저' 앱 안에 있는 매니저야. 사용자가 넣으라는 곳에 기록을 넣고 고치는 일만 해.
 규칙:
 - 한국어로 짧고 친근하게 답해. 무엇을 어디에 넣었는지 한 줄로 알려줘.
@@ -1362,8 +1444,9 @@ function instructions() {
 오늘 운동 부위: ${partOf(TODAY)}, 내일 운동 부위: ${partOf(tk)}
 주간 운동 루틴: ${split}
 돈: 월급날 매달 ${S.money.payday}일, 적금 ${manwon(S.money.savings)} 자동이체, 한 달 쓸 수 있는 돈 ${manwon(S.money.spend)}, 잔액 ${bal}
-이번 달(${mk}) 쓴 돈 합계 ${won(spentIn(mk))}, 최근 지출: ${JSON.stringify(recentSpend)}
-지출을 말하면 add_expense로 기록해. 기록은 지우지 않고 숨기기만 해.`;
+이번 달(${mk}) 쓴 돈 합계 ${won(spentIn(mk))}, 최근 내역: ${JSON.stringify(recentSpend)}
+지출은 add_expense(분류: ${CATS.map(c => c.name).join(', ')}), 들어온 돈은 add_income으로 기록해. 기록은 지우지 않고 숨기기만 해.
+사진이 오면: 은행·카드 앱 화면이면 보이는 통장 잔액은 set_balance로, 거래는 add_expense/add_income으로 넣어. 최근 내역에 이미 있는 거래(같은 날짜·금액)는 다시 넣지 마. 화면이 흐리거나 확실하지 않은 숫자는 넣지 말고 물어봐. 넣은 것을 한 줄씩 알려줘.`;
 }
 
 function makeTools(before, acts) {
@@ -1522,6 +1605,7 @@ function makeTools(before, acts) {
       description: 'Records money the user spent: date (YYYY-MM-DD), amount in won, title (what it was for), optional bank (농협, 카카오뱅크, 신한 or 현금). Returns the id.',
       inputSchema: { type: 'object', properties: {
         date: { type: 'string' }, amount: { type: 'number' }, title: { type: 'string' }, bank: { type: 'string', enum: [...BANKS.map(b => b.name), '현금'] },
+        category: { type: 'string', enum: CATS.map(c => c.name) },
       }, required: ['date', 'amount', 'title'] },
       execute: async input => {
         const d = needDate(input.date), amt = Math.round(Number(input.amount));
@@ -1532,9 +1616,31 @@ function makeTools(before, acts) {
         keep(`spend/${mk}`, S.spend[mk]?.items);
         const item = { id: newId(), date: d, amount: amt, title, at: new Date().toISOString() };
         if (bank) item.bank = bank;
+        const cat = CATS.find(c => c.name === input.category || c.id === input.category);
+        if (cat) item.cat = cat.id;
         await putSpend(mk, [...clone(S.spend[mk]?.items || []), item]);
         acts.push(`${dotDate(d)} 지출 ${title} ${won(amt)}`);
         return { ok: true, id: item.id, monthTotal: spentIn(mk) };
+      },
+    },
+    {
+      name: 'add_income',
+      description: 'Records money that came in (salary, transfer in): date (YYYY-MM-DD), amount in won, title, optional bank.',
+      inputSchema: { type: 'object', properties: {
+        date: { type: 'string' }, amount: { type: 'number' }, title: { type: 'string' }, bank: { type: 'string', enum: [...BANKS.map(b => b.name), '현금'] },
+      }, required: ['date', 'amount', 'title'] },
+      execute: async input => {
+        const d = needDate(input.date), amt = Math.round(Number(input.amount));
+        if (!(amt > 0)) throw new Error('amount는 0보다 큰 원 단위 숫자예요');
+        const title = String(input.title || '').trim().slice(0, 40) || '입금';
+        const bank = BANKS.find(x => x.name === input.bank || x.id === input.bank)?.id || (input.bank === '현금' ? 'cash' : undefined);
+        const mk = d.slice(0, 7);
+        keep(`spend/${mk}`, S.spend[mk]?.items);
+        const item = { id: newId(), type: 'in', date: d, amount: amt, title, at: new Date().toISOString() };
+        if (bank) item.bank = bank;
+        await putSpend(mk, [...clone(S.spend[mk]?.items || []), item]);
+        acts.push(`${dotDate(d)} 입금 ${title} +${won(amt)}`);
+        return { ok: true, id: item.id };
       },
     },
     {
@@ -1591,6 +1697,23 @@ async function undoTurn(at) {
 }
 
 const $input = document.getElementById('chatInput');
+const $file = document.getElementById('chatFile');
+const $imgChip = document.getElementById('chatImg');
+function setImage(file) {
+  UI.img = file || null;
+  $imgChip.hidden = !UI.img;
+  if (UI.img) {
+    const url = URL.createObjectURL(UI.img);
+    $imgChip.querySelector('img').src = url;
+    $imgChip.querySelector('img').onload = () => URL.revokeObjectURL(url);
+  }
+}
+$file.addEventListener('change', () => {
+  if ($file.files?.[0]) { setImage($file.files[0]); openChat(); if (!$input.value) $input.placeholder = '비워 두면 화면을 읽어 넣어요'; }
+  $file.value = '';
+});
+document.getElementById('chatAttach').addEventListener('click', () => $file.click());
+$imgChip.querySelector('button').addEventListener('click', () => { setImage(null); $input.placeholder = '매니저에게 말하기'; });
 const $send = document.getElementById('chatSend');
 const SEND_ICON = $send.innerHTML;
 const STOP_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="3" fill="currentColor"/></svg>';
@@ -1609,14 +1732,18 @@ function liveUpdate() {
 
 async function send() {
   if (UI.pending) { UI.ctl?.abort(); return; }
-  const text = $input.value.trim();
+  const img = UI.img;
+  const text = $input.value.trim() || (img ? '이 은행 앱 화면을 보고 잔액과 거래 내역을 넣어줘' : '');
   if (!text) return;
   if (!SAMPLE) { toast('이 화면에서는 매니저를 부를 수 없어요'); return; }
   $input.value = '';
+  setImage(null);
+  $input.placeholder = '매니저에게 말하기';
   $input.style.height = '';
   NOW = new Date();
   const before = {}, acts = [];
-  UI.pending = { user: text, text: '', acts };
+  const shown = img ? `📷 ${text}` : text;
+  UI.pending = { user: shown, text: '', acts };
   UI.ctl = new AbortController();
   setBusy(true);
   paintChat();
@@ -1629,7 +1756,8 @@ async function send() {
     if (lim && !lim.tools) tools = [];
     else if (lim?.tools?.maxCount) tools = tools.slice(0, lim.tools.maxCount);
     const res = await SAMPLE(turns, {
-      modelTier: 'quick',
+      modelTier: img ? 'default' : 'quick',
+      ...(img ? { images: [img] } : {}),
       signal: UI.ctl.signal,
       ...(tools.length ? { tools } : { cache: false }),
       onText: ({ text: t }) => { UI.pending.text = t; liveUpdate(); },
@@ -1641,12 +1769,14 @@ async function send() {
       : e?.code === 'not_granted' ? '매니저를 쓰도록 허용해야 대화할 수 있어요.'
       : e?.code === 'rate_limited' ? '지금은 너무 많이 불렀어요. 조금 뒤에 다시 말해 주세요.'
       : e?.code === 'sampling_disabled' ? '이 계정에서는 매니저를 부를 수 없어요.'
+      : e?.code === 'image_rejected' ? '이 사진은 읽을 수 없어요. 다른 캡처로 다시 보내 주세요.'
+      : e?.code === 'images_unavailable' ? '이 화면에서는 사진을 보낼 수 없어요.'
       : '답을 받지 못했어요. 다시 말해 주세요.';
   }
   const at = new Date().toISOString();
   const reply = [answer.trim(), failed].filter(Boolean).join('\n');
   if (Object.keys(before).length) UI.undo[at] = before;
-  const messages = [{ role: 'user', content: text, at: `${at}u` }, { role: 'assistant', content: reply || '…', at, actions: acts }];
+  const messages = [{ role: 'user', content: shown, at: `${at}u` }, { role: 'assistant', content: reply || '…', at, actions: acts }];
   if (acts.length) logAct(`매니저 · ${acts.join(' / ')}`);
   UI.pending = null;
   UI.ctl = null;

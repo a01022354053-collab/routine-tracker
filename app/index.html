@@ -54,7 +54,10 @@
       <button class="chip soft" data-q="내일 운동은 ">내일 운동</button>
       <button class="chip soft" data-q="잔액 ">잔액 입력</button>
     </div>
+    <div class="img-chip" id="chatImg" hidden><img alt="보낼 사진"><button type="button" aria-label="사진 빼기"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg></button></div>
     <form id="chatForm" class="mgr-form">
+      <button class="attach" id="chatAttach" type="button" aria-label="사진 붙이기" hidden><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 8.5A2.5 2.5 0 016.5 6h1.7l1.3-2h5l1.3 2h1.7A2.5 2.5 0 0120 8.5v8A2.5 2.5 0 0117.5 19h-11A2.5 2.5 0 014 16.5v-8z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12.5" r="3.2" stroke="currentColor" stroke-width="2"/></svg></button>
+      <input type="file" id="chatFile" accept="image/*" hidden>
       <textarea class="field" id="chatInput" rows="1" maxlength="1000" placeholder="매니저에게 말하기" aria-label="매니저에게 보낼 말"></textarea>
       <button class="send" id="chatSend" type="submit" aria-label="보내기">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
