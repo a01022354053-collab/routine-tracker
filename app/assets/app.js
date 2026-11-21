@@ -11,10 +11,12 @@ const PARTS = ['등', '가슴', '하체', '휴식'];
 // 요일(0=일)별 운동 부위: 금 등, 토 가슴, 일 하체, 월 등, 화 가슴, 수 하체, 목 휴식
 const DEFAULT_SPLIT = { 0: '하체', 1: '등', 2: '가슴', 3: '하체', 4: '휴식', 5: '등', 6: '가슴' };
 const BANKS = [
-  { id: 'nh', name: '농협', short: '농', color: '#3ddc84' },
-  { id: 'kakao', name: '카카오뱅크', short: '카', color: '#ffe81a' },
-  { id: 'shinhan', name: '신한', short: '신', color: '#5b8cff' },
+  { id: 'nh', name: '농협', short: '농', color: '#01a54e', logo: 'private/bank-nh.png' },
+  { id: 'kakao', name: '카카오뱅크', short: '카', color: '#ffe300', logo: 'private/bank-kakao.png' },
+  { id: 'shinhan', name: '신한', short: '신', color: '#0046ff', logo: 'private/bank-shinhan.png' },
 ];
+// 은행 아이콘: 로고 사진을 동그랗게 (사진이 없으면 첫 글자)
+const bankLogo = b => (b.logo ? `<img src="${b.logo}" alt="" draggable="false">` : b.short);
 const DEFAULT_MONEY = { payday: 10, savings: 550000, spend: 650000, balances: { nh: null, kakao: null, shinhan: null } };
 // 통장마다 하는 일: 농협은 월급, 신한은 나라사랑카드, 카카오뱅크는 따로 모으는 돈. 쓸 수 있는 돈 = 농협 + 신한
 const ACCT_ROLE = { nh: '월급 통장', shinhan: '나라사랑 통장 · 카드', kakao: '따로 모으는 돈' };
@@ -853,7 +855,7 @@ function viewMoney() {
     const v = bal(b.id);
     return `<div class="t-row acct" style="--b:${b.color}">
       <button class="acct-main" data-acct="${b.id}">
-        <span class="ico bank">${b.short}</span>
+        <span class="ico bank">${bankLogo(b)}</span>
         <span class="txt"><small>${b.name} · ${ACCT_ROLE[b.id]}</small><b class="num">${v == null ? '잔액을 넣어 주세요' : won(v)}</b></span>
       </button>
       <button class="t-send" data-transfer="${b.id}">이체</button>
@@ -1007,7 +1009,7 @@ function transferSheet(fromId) {
   const balOf = id => S.money.balances[id];
   const pickHTML = (name, sel, other) => `<div class="tr-pick" data-side="${name}">${BANKS.map(b => `
       <button class="tr-acct" data-b="${b.id}" style="--b:${b.color}" aria-pressed="${b.id === sel}" ${b.id === other ? 'data-other' : ''}>
-        <span class="ico bank">${b.short}</span><b>${b.name}</b><small class="num">${balOf(b.id) == null ? '잔액 모름' : won(balOf(b.id))}</small></button>`).join('')}</div>`;
+        <span class="ico bank">${bankLogo(b)}</span><b>${b.name}</b><small class="num">${balOf(b.id) == null ? '잔액 모름' : won(balOf(b.id))}</small></button>`).join('')}</div>`;
   openSheet(`<div class="tr-head"><h3>계좌 이체</h3><p>실제로 옮긴 돈을 여기서도 똑같이 옮겨요</p></div>
     <div class="sh-sec"><span class="label">어디서</span><div id="trFrom">${pickHTML('from', f.from, f.to)}</div></div>
     <button class="tr-swap" id="trSwap" aria-label="보내는 곳과 받는 곳 바꾸기">⇅</button>
@@ -1207,7 +1209,7 @@ function accountSheet(bankId) {
   const mk = monthKey(UI.my, UI.mm);
   const mine = spendOf(mk).filter(x => x.bank === bankId).slice().reverse();
   const moves = transfersOf(mk).filter(x => x.from === bankId || x.to === bankId).slice().reverse();
-  openSheet(`<div class="t-acct-head" style="--b:${b.color}"><span class="ico bank">${b.short}</span><b>${b.name}</b></div>
+  openSheet(`<div class="t-acct-head" style="--b:${b.color}"><span class="ico bank">${bankLogo(b)}</span><b>${b.name}</b></div>
     <div class="t-big num">${v == null ? '잔액을 넣어 주세요' : won(v)}</div>
     <span class="t-sub">${ago(S.money.balanceAt?.[bankId]).replace(' 입력', ' 업데이트')}</span>
     <div class="t-btns three"><button class="t-btn primary" id="acMove">이체</button><button class="t-btn" id="acEdit">잔액 고치기</button><button class="t-btn" id="acAdd">내역 추가</button></div>
@@ -1231,7 +1233,7 @@ function balanceAllSheet() {
   openSheet(`<div class="sh-head" style="--c:var(--lime)"><span class="q-icon"><span class="emoji" aria-hidden="true">🏦</span></span>
       <div><h3>잔액 한 번에 입력</h3><p>바뀐 통장만 고쳐도 돼요</p></div></div>
     <div class="sh-sec">${BANKS.map(b => `
-      <label class="bal-in" style="--b:${b.color}"><span class="bank">${b.short}</span><b>${b.name}</b>
+      <label class="bal-in" style="--b:${b.color}"><span class="bank">${bankLogo(b)}</span><b>${b.name}</b>
         <span class="numfield"><input class="field" data-bal="${b.id}" inputmode="numeric" placeholder="0" value="${S.money.balances[b.id] ?? ''}"><span>원</span></span></label>`).join('')}
     </div>
     <button class="btn" id="balAllSave">저장</button>`, body => {
@@ -2032,7 +2034,7 @@ function todoForm(date, id) {
 
 function balanceSheet(bankId) {
   const b = BANKS.find(x => x.id === bankId), v = S.money.balances[bankId];
-  openSheet(`<div class="sh-head"><span class="q-icon" style="--c:${b.color}"><b style="color:#0d0a22; font-size:18px">${b.short}</b></span>
+  openSheet(`<div class="sh-head"><span class="q-icon bank-q" style="--c:${b.color}">${bankLogo(b)}</span>
       <div><h3>${b.name}</h3><p>잔액</p></div></div>
     <div class="numfield"><input class="field" id="balIn" inputmode="numeric" placeholder="0" value="${v == null ? '' : v}"><span>원</span></div>
     <button class="btn" id="balSave">저장</button>`, body => {
