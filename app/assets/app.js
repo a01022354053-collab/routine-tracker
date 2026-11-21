@@ -66,6 +66,7 @@ const S = {
   spend: {},      // 'YYYY-MM' → 지출 목록
   balhist: {},    // 'YYYY-MM' → 잔액 기록
   savings: clone(DEFAULT_SAVINGS),   // 군적금
+  transfers: {},  // 'YYYY-MM' → 통장끼리 옮긴 기록
   stocks: clone(DEFAULT_STOCKS),     // 주식
 };
 const UI = {
@@ -185,6 +186,44 @@ async function putSavings(v) {
   refresh();
   return queue('savings/main', () => DB.doc('savings/main').set(v));
 }
+async function putTransfers(mk, items) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.transfers[mk] = { month: mk, items };
+  refresh();
+  return queue(`transfers/${mk}`, () => DB.doc(`transfers/${mk}`).set({ month: mk, items }));
+}
+const transfersOf = mk => (S.transfers[mk]?.items || []).filter(x => !x.removed);
+// 계좌 이체: 실제로 옮긴 만큼 숫자만 옮긴다(소비나 수입으로 세지 않음)
+async function doTransfer(from, to, amount, memo) {
+  const money = clone(S.money), now = new Date().toISOString();
+  money.balances[from] = (Number(money.balances[from]) || 0) - amount;
+  money.balances[to] = (Number(money.balances[to]) || 0) + amount;
+  money.balanceAt = { ...(money.balanceAt || {}), [from]: now, [to]: now };
+  await putMoney(money);
+  addBalHist(from, money.balances[from]);
+  addBalHist(to, money.balances[to]);
+  const mk = TODAY.slice(0, 7);
+  const item = { id: newId(), date: TODAY, at: now, from, to, amount };
+  if (memo) item.memo = memo;
+  await putTransfers(mk, [...clone(S.transfers[mk]?.items || []), item]);
+  logAct(`이체 · ${bankName(from)} → ${bankName(to)} ${won(amount)}${memo ? ` (${memo})` : ''}`);
+  return item;
+}
+async function cancelTransfer(mk, id) {
+  const items = clone(S.transfers[mk]?.items || []), x = items.find(i => i.id === id);
+  if (!x || x.removed) return;
+  const money = clone(S.money), now = new Date().toISOString();
+  money.balances[x.from] = (Number(money.balances[x.from]) || 0) + x.amount;
+  money.balances[x.to] = (Number(money.balances[x.to]) || 0) - x.amount;
+  money.balanceAt = { ...(money.balanceAt || {}), [x.from]: now, [x.to]: now };
+  await putMoney(money);
+  addBalHist(x.from, money.balances[x.from]);
+  addBalHist(x.to, money.balances[x.to]);
+  Object.assign(x, { removed: true, removedAt: now });
+  await putTransfers(mk, items);
+  logAct(`이체 취소 · ${bankName(x.from)} → ${bankName(x.to)} ${won(x.amount)} (${dotDate(x.date)})`);
+}
+
 async function putStocks(v) {
   if (!DB) throw new Error('저장소에 연결되지 않았어요');
   S.stocks = clone(v);
@@ -248,7 +287,8 @@ function stockSum() {
   const hs = (S.stocks.holdings || []).filter(h => !h.removed);
   const rows = hs.map(h => {
     const cost = h.qty * h.avg, value = h.price != null ? h.qty * h.price : null;
-    return { ...h, cost, value, pnl: value != null ? value - cost : null, rate: value != null && cost ? ((value - cost) / cost) * 100 : null };
+    return { ...h, cost, value, pnl: value != null ? value - cost : null, rate: value != null && cost ? ((value - cost) / cost) * 100 : null,
+      perShare: h.price != null ? h.price - h.avg : null, dayChange: h.quote?.change ?? null, dayRate: h.quote?.rate ?? null };
   });
   const priced = rows.filter(r => r.value != null);
   return { rows, cost: rows.reduce((s, r) => s + r.cost, 0), value: priced.length ? priced.reduce((s, r) => s + r.value, 0) : null,
@@ -355,6 +395,13 @@ async function connect() {
     const v = { ...clone(DEFAULT_STOCKS), ...(d.data() || {}) };
     if (same(v, S.stocks)) return;
     S.stocks = v;
+    refresh();
+  }, () => {});
+  DB.collection('transfers').onSnapshot(snap => {
+    const o = {};
+    snap.docs.forEach(d => { o[d.id] = d.data(); });
+    if (same(o, S.transfers)) return;
+    S.transfers = o;
     refresh();
   }, () => {});
   DB.collection('balhist').onSnapshot(snap => {
@@ -768,6 +815,8 @@ function viewMoney() {
       <span class="num">${won(v)}</span></div>`).join('')}</div>`;
   const byDay = {};
   items.forEach(x => (byDay[x.date] = byDay[x.date] || []).push(x));
+  transfersOf(mk).forEach(x => (byDay[x.date] = byDay[x.date] || []).push({ ...x, isTransfer: true }));
+  Object.values(byDay).forEach(list => list.sort((a, b) => String(a.at || '').localeCompare(String(b.at || ''))));
   const days = Object.keys(byDay).sort().reverse();
 
   const cards = cardItems(mk), cardSum = cards.reduce((s, x) => s + x.amount, 0);
@@ -775,11 +824,13 @@ function viewMoney() {
 
   const acctRow = b => {
     const v = bal(b.id);
-    return `<button class="t-row acct" data-acct="${b.id}" style="--b:${b.color}">
-      <span class="ico bank">${b.short}</span>
-      <span class="txt"><small>${b.name} · ${ACCT_ROLE[b.id]}</small><b class="num">${v == null ? '잔액을 넣어 주세요' : won(v)}</b></span>
-      ${ICON.next}
-    </button>`;
+    return `<div class="t-row acct" style="--b:${b.color}">
+      <button class="acct-main" data-acct="${b.id}">
+        <span class="ico bank">${b.short}</span>
+        <span class="txt"><small>${b.name} · ${ACCT_ROLE[b.id]}</small><b class="num">${v == null ? '잔액을 넣어 주세요' : won(v)}</b></span>
+      </button>
+      <button class="t-send" data-transfer="${b.id}">이체</button>
+    </div>`;
   };
 
   return `
@@ -794,8 +845,9 @@ function viewMoney() {
           <div class="t-kv"><span>따로 모으는 돈 <small>카카오뱅크</small></span><b class="num">${saveCash == null ? '–' : won(saveCash)}</b></div>
           <div class="t-kv"><span>군적금</span><b class="num">${sv.accts.length ? won(sv.bal) : '–'}</b></div>
           <div class="t-kv"><span>주식</span><b class="num">${st.rows.length ? (st.value != null ? won(st.value) : '현재가 필요') : '–'}</b></div>
-          <div class="t-btns">
-            <button class="t-btn primary" data-bal-all>잔액 입력</button>
+          <div class="t-btns three">
+            <button class="t-btn primary" data-transfer="">이체</button>
+            <button class="t-btn" data-bal-all>잔액 입력</button>
             <button class="t-btn" data-add-expense="${TODAY.slice(0, 7)}">내역 추가</button>
           </div>
         </section>
@@ -829,24 +881,33 @@ function viewMoney() {
         </section>
 
         <section class="t-card anim" style="--i:4">
-          <div class="t-head"><b>주식</b><button class="t-mini" data-stock>${st.rows.length ? '현재가 입력' : '종목 추가'}</button></div>
+          <div class="t-head"><b>주식</b><button class="t-mini" data-stock>${st.rows.length ? '고치기' : '종목 추가'}</button></div>
           ${st.rows.length ? `
             <span class="t-label">평가 금액</span>
-            <div class="t-big num">${st.value != null ? won(st.value) : '현재가를 넣어 주세요'}</div>
-            ${st.pnl != null ? `<p class="t-say"><em class="${st.pnl >= 0 ? 'up' : 'down'} num">${updown(st.pnl)} (${updown((st.pnl / st.cost) * 100, '%')})</em></p>` : ''}
+            <div class="t-big num">${st.value != null ? won(st.value) : '현재가를 기다리는 중'}</div>
+            ${st.pnl != null ? `<p class="t-say">산 가격보다 <em class="${st.pnl >= 0 ? 'up' : 'down'} num">${won(Math.abs(st.pnl))} ${st.pnl >= 0 ? '올랐어요' : '떨어졌어요'}</em> <span class="${st.pnl >= 0 ? 'up' : 'down'} num">${updown((st.pnl / st.cost) * 100, '%')}</span></p>
+              ${st.rows.length === 1 && st.rows[0].perShare != null ? `<span class="t-sub num">한 주에 ${won(Math.abs(st.rows[0].perShare))} ${st.rows[0].perShare >= 0 ? '올랐어요' : '내렸어요'} (${won(st.rows[0].avg)} → ${won(st.rows[0].price)})</span>` : ''}` : ''}
             <div class="tbl-wrap"><table class="t-table">
-              <thead><tr><th>종목</th><th>수량</th><th>평균 단가</th><th>현재가</th><th>손익</th></tr></thead>
-              <tbody>${st.rows.map(r => `<tr data-stock="${esc(r.id)}">
-                <td><b>${esc(r.name)}</b></td>
-                <td class="num">${r.qty}주</td>
-                <td class="num">${won(r.avg)}</td>
-                <td class="num">${r.price != null ? won(r.price) : '–'}</td>
-                <td class="num ${r.pnl == null ? '' : r.pnl >= 0 ? 'up' : 'down'}">${r.pnl == null ? '–' : `${updown(r.pnl)}<small>${updown(r.rate, '%')}</small>`}</td>
-              </tr>`).join('')}</tbody>
-              <tfoot><tr><td>합계</td><td></td><td class="num">${won(st.cost)}</td><td class="num">${st.value != null ? won(st.value) : '–'}</td>
-                <td class="num ${st.pnl == null ? '' : st.pnl >= 0 ? 'up' : 'down'}">${st.pnl == null ? '–' : updown(st.pnl)}</td></tr></tfoot>
+              <thead><tr><th>종목</th><th>산 가격</th><th>지금 가격</th><th>손익</th></tr></thead>
+              <tbody>${st.rows.map(r => {
+                const cls = v => (v == null ? '' : v >= 0 ? 'up' : 'down');
+                return `<tr data-stock="${esc(r.id)}">
+                <td><b>${esc(r.name)}</b><small>${r.qty}주</small></td>
+                <td class="num">${won(r.avg)}<small>총 ${won(r.cost)}</small></td>
+                <td class="num">${r.price != null ? won(r.price) : '–'}${r.dayRate != null ? `<small class="${cls(r.dayChange)}">전일 ${updown(r.dayRate, '%')}</small>` : ''}</td>
+                <td class="num ${cls(r.pnl)}">${r.pnl == null ? '–' : `${updown(r.pnl)}<small>${updown(r.rate, '%')}</small>`}</td>
+              </tr>`;
+              }).join('')}</tbody>
+              ${st.rows.length > 1 ? `<tfoot><tr><td>합계</td><td class="num">${won(st.cost)}</td><td class="num">${st.value != null ? won(st.value) : '–'}</td>
+                <td class="num ${st.pnl == null ? '' : st.pnl >= 0 ? 'up' : 'down'}">${st.pnl == null ? '–' : updown(st.pnl)}</td></tr></tfoot>` : ''}
             </table></div>
-            <span class="t-sub">${(() => { const at = st.rows.map(r => r.priceAt).filter(Boolean).sort().pop(); return at ? `현재가 ${ago(at)} · 직접 넣은 값이에요` : '현재가는 직접 넣어요'; })()}</span>`
+            <span class="t-sub">${(() => {
+              const q = st.rows.map(r => r.quote).filter(Boolean).sort((a, b) => String(a.tradedAt).localeCompare(String(b.tradedAt))).pop();
+              if (!q) { const at = st.rows.map(r => r.priceAt).filter(Boolean).sort().pop(); return at ? `현재가 ${ago(at)} · 직접 넣은 값` : '현재가를 기다리는 중'; }
+              const t = new Date(q.tradedAt);
+              const when = `${t.getMonth() + 1}월 ${t.getDate()}일 ${DAY[t.getDay()]}`;
+              return `${when} ${q.status === 'OPEN' ? `${pad(t.getHours())}:${pad(t.getMinutes())} 시세` : '장 마감 가격'} · 네이버 증권 · 평일 장중에 자동으로 갱신돼요`;
+            })()}</span>`
           : '<p class="t-empty">아직 넣은 종목이 없어요</p>'}
         </section>
       </div>
@@ -895,11 +956,98 @@ function viewMoney() {
           <div class="t-head"><b>${UI.mm + 1}월 내역</b><span class="num">${items.length}</span><button class="t-mini" data-add-expense="${mk}">추가</button></div>
           ${days.length ? days.map(d => `
             <div class="t-day">${dayLabelT(d)}</div>
-            ${byDay[d].slice().reverse().map(x => txRowHTML(mk, x)).join('')}`).join('')
+            ${byDay[d].slice().reverse().map(x => (x.isTransfer ? trRowHTML(mk, x) : txRowHTML(mk, x))).join('')}`).join('')
             : `<p class="t-empty">${isNow ? '아직 기록한 내역이 없어요' : '이 달에는 내역이 없어요'}</p>`}
         </section>
       </div>
     </div>`;
+}
+
+function trRowHTML(mk, x, forBank) {
+  const sign = forBank ? (x.to === forBank ? '+' : '-') : '';
+  return `<button class="t-row tx" data-tr="${mk}|${esc(x.id)}">
+    <span class="ico"><span class="emoji" aria-hidden="true">🔁</span></span>
+    <span class="txt"><b>${bankName(x.from)} → ${bankName(x.to)}</b><small>이체${x.memo ? ` · ${esc(x.memo)}` : ''}</small></span>
+    <span class="amt num move ${sign === '+' ? 'in' : ''}">${sign}${won(x.amount)}</span>
+  </button>`;
+}
+
+// 토스 송금 화면처럼: 어디서 → 어디로, 큰 금액, 빠른 금액 버튼
+function transferSheet(fromId) {
+  const f = { from: fromId || 'nh', to: fromId === 'kakao' ? 'nh' : fromId === 'shinhan' ? 'kakao' : 'kakao', amount: 0 };
+  if (f.to === f.from) f.to = BANKS.find(b => b.id !== f.from).id;
+  const balOf = id => S.money.balances[id];
+  const pickHTML = (name, sel, other) => `<div class="tr-pick" data-side="${name}">${BANKS.map(b => `
+      <button class="tr-acct" data-b="${b.id}" style="--b:${b.color}" aria-pressed="${b.id === sel}" ${b.id === other ? 'data-other' : ''}>
+        <span class="ico bank">${b.short}</span><b>${b.name}</b><small class="num">${balOf(b.id) == null ? '잔액 모름' : won(balOf(b.id))}</small></button>`).join('')}</div>`;
+  openSheet(`<div class="tr-head"><h3>계좌 이체</h3><p>실제로 옮긴 돈을 여기서도 똑같이 옮겨요</p></div>
+    <div class="sh-sec"><span class="label">어디서</span><div id="trFrom">${pickHTML('from', f.from, f.to)}</div></div>
+    <button class="tr-swap" id="trSwap" aria-label="보내는 곳과 받는 곳 바꾸기">⇅</button>
+    <div class="sh-sec"><span class="label">어디로</span><div id="trTo">${pickHTML('to', f.to, f.from)}</div></div>
+    <div class="tr-amt"><input id="trAmt" inputmode="numeric" size="1" placeholder="얼마나 옮길까요?" aria-label="옮길 금액"><span id="trWon" hidden>원</span></div>
+    <p class="tr-hint num" id="trHint"></p>
+    <div class="parts tr-quick">${[10000, 50000, 100000].map(v => `<button class="pchip" data-add="${v}">+${manwon(v)}</button>`).join('')}<button class="pchip" data-all>전액</button></div>
+    <input class="field" id="trMemo" maxlength="30" placeholder="메모 (선택)">
+    <button class="btn" id="trGo" disabled>이체하기</button>`, body => {
+    const $ = q => body.querySelector(q);
+    const amt = $('#trAmt');
+    const draw = () => {
+      body.querySelectorAll('#trFrom .tr-acct').forEach(b => { b.setAttribute('aria-pressed', b.dataset.b === f.from); b.toggleAttribute('data-other', b.dataset.b === f.to); });
+      body.querySelectorAll('#trTo .tr-acct').forEach(b => { b.setAttribute('aria-pressed', b.dataset.b === f.to); b.toggleAttribute('data-other', b.dataset.b === f.from); });
+      amt.value = f.amount ? f.amount.toLocaleString('ko-KR') : '';
+      amt.style.width = f.amount ? `${amt.value.length * 0.62 + 0.4}em` : '100%';
+      $('#trWon').hidden = !f.amount;
+      const fb = balOf(f.from);
+      $('#trHint').textContent = !f.amount ? `${bankName(f.from)} 잔액 ${fb == null ? '모름' : won(fb)}`
+        : fb != null && f.amount > fb ? `${bankName(f.from)} 잔액보다 ${won(f.amount - fb)} 많아요` : `${bankName(f.to)}(으)로 ${won(f.amount)} 옮겨요`;
+      $('#trHint').classList.toggle('warn', fb != null && f.amount > fb);
+      $('#trGo').disabled = !f.amount || f.from === f.to;
+    };
+    const pick = (side, id) => {
+      if (side === 'from') { if (id === f.to) f.to = f.from; f.from = id; } else { if (id === f.from) f.from = f.to; f.to = id; }
+      draw();
+    };
+    $('#trFrom').addEventListener('click', e => { const b = e.target.closest('[data-b]'); if (b) pick('from', b.dataset.b); });
+    $('#trTo').addEventListener('click', e => { const b = e.target.closest('[data-b]'); if (b) pick('to', b.dataset.b); });
+    $('#trSwap').addEventListener('click', () => { [f.from, f.to] = [f.to, f.from]; draw(); });
+    amt.addEventListener('input', () => { f.amount = Number(amt.value.replace(/[^\d]/g, '')) || 0; draw(); });
+    body.querySelector('.tr-quick').addEventListener('click', e => {
+      const b = e.target.closest('[data-add], [data-all]'); if (!b) return;
+      f.amount = b.dataset.add ? f.amount + Number(b.dataset.add) : Math.max(0, Number(balOf(f.from)) || 0);
+      draw();
+    });
+    $('#trGo').addEventListener('click', async e => {
+      if (!f.amount || f.from === f.to) return;
+      e.currentTarget.disabled = true;
+      try {
+        await doTransfer(f.from, f.to, f.amount, $('#trMemo').value.trim());
+        window.FX?.burst(innerWidth / 2, innerHeight * 0.55, 18);
+        $sheetBody.innerHTML = `<div class="grip" aria-hidden="true"></div><div class="tr-done">
+          <span class="tr-check">${ICON.check}</span>
+          <h3>${bankName(f.to)}(으)로<br><span class="num">${won(f.amount)}</span> 옮겼어요</h3>
+          <div class="t-kv"><span>${bankName(f.from)}</span><b class="num">${won(S.money.balances[f.from])}</b></div>
+          <div class="t-kv"><span>${bankName(f.to)}</span><b class="num">${won(S.money.balances[f.to])}</b></div>
+          <button class="btn" id="trOk">확인</button></div>`;
+        $sheetBody.querySelector('#trOk').addEventListener('click', closeSheet);
+      } catch (err) { saveFail(); e.currentTarget.disabled = false; }
+    });
+    draw();
+    setTimeout(() => amt.focus(), 320);
+  }, 'toss');
+}
+
+function transferDetailSheet(mk, id) {
+  const x = (S.transfers[mk]?.items || []).find(i => i.id === id);
+  if (!x) return;
+  openSheet(`<div class="tr-head"><h3>${bankName(x.from)} → ${bankName(x.to)}</h3><p class="num">${dotDate(x.date)} ${x.at ? `${pad(new Date(x.at).getHours())}:${pad(new Date(x.at).getMinutes())}` : ''} 이체${x.memo ? ` · ${esc(x.memo)}` : ''}</p></div>
+    <div class="t-big num">${won(x.amount)}</div>
+    <p class="t-sub">잘못 옮겼으면 취소하세요. 두 통장 잔액이 원래대로 돌아가고, 기록은 남아요.</p>
+    <div class="btn-row"><button class="btn ghost" id="trCancel">이체 취소</button><button class="btn" id="trClose">닫기</button></div>`, body => {
+    body.querySelector('#trClose').addEventListener('click', closeSheet);
+    body.querySelector('#trCancel').addEventListener('click', async () => {
+      try { await cancelTransfer(mk, id); toast('이체를 취소했어요'); closeSheet(); } catch (e) { saveFail(); }
+    });
+  }, 'toss');
 }
 
 /* ---------- 군적금 · 주식 · 카드 시트 ---------- */
@@ -947,7 +1095,7 @@ function stockSheet() {
   const st = clone(S.stocks);
   const hs = (st.holdings || []).filter(h => !h.removed);
   openSheet(`<div class="sh-head"><span class="q-icon"><span class="emoji" aria-hidden="true">📈</span></span>
-      <div><h3>주식</h3><p>현재가는 증권 앱에서 보고 넣어요</p></div></div>
+      <div><h3>주식</h3><p>시세는 평일 장중에 자동으로 들어와요. 급하면 직접 넣어도 돼요</p></div></div>
     ${hs.map(h => `<div class="sh-sec" data-h="${esc(h.id)}"><span class="label">${esc(h.name)} · ${h.qty}주 · 평균 ${won(h.avg)}</span>
       <div class="sav-grid">
         <label>현재가<span class="numfield"><input class="field" data-k="price" inputmode="numeric" placeholder="0" value="${h.price ?? ''}"><span>원</span></span></label>
@@ -957,6 +1105,7 @@ function stockSheet() {
     <details class="add-stock"${hs.length ? '' : ' open'}><summary>종목 추가</summary>
       <div class="sav-grid">
         <label>종목 이름<input class="field" id="nsName" maxlength="20" placeholder="예: 삼성전자"></label>
+        <label>종목 코드 <small>(자동 시세용 6자리)</small><input class="field" id="nsCode" inputmode="numeric" maxlength="6" placeholder="005930"></label>
         <label>수량<span class="numfield"><input class="field" id="nsQty" inputmode="numeric" placeholder="0"><span>주</span></span></label>
         <label>평균 단가<span class="numfield"><input class="field" id="nsAvg" inputmode="numeric" placeholder="0"><span>원</span></span></label>
       </div></details>
@@ -978,7 +1127,8 @@ function stockSheet() {
         }
       }
       const nn = body.querySelector('#nsName').value.trim(), nq = Number(body.querySelector('#nsQty').value), na = Number(body.querySelector('#nsAvg').value);
-      if (nn && nq > 0 && na > 0) { st.holdings = [...(st.holdings || []), { id: newId(), name: nn, qty: nq, avg: na, price: null, priceAt: null, history: [], at: now }]; lines.push(`종목 추가 ${nn} ${nq}주 ${won(na)}`); }
+      const nc = body.querySelector('#nsCode').value.trim();
+      if (nn && nq > 0 && na > 0) { const h = { id: newId(), name: nn, qty: nq, avg: na, price: null, priceAt: null, history: [], at: now }; if (/^\d{6}$/.test(nc)) h.code = nc; st.holdings = [...(st.holdings || []), h]; lines.push(`종목 추가 ${nn} ${nq}주 ${won(na)}`); }
       try { await putStocks(st); if (lines.length) logAct(`주식 · ${lines.join(', ')}`); toast('저장했어요'); closeSheet(); } catch (e) { saveFail(); }
     });
   }, 'toss');
@@ -1028,17 +1178,22 @@ function accountSheet(bankId) {
   const b = BANKS.find(x => x.id === bankId), v = S.money.balances[bankId];
   const mk = monthKey(UI.my, UI.mm);
   const mine = spendOf(mk).filter(x => x.bank === bankId).slice().reverse();
+  const moves = transfersOf(mk).filter(x => x.from === bankId || x.to === bankId).slice().reverse();
   openSheet(`<div class="t-acct-head" style="--b:${b.color}"><span class="ico bank">${b.short}</span><b>${b.name}</b></div>
     <div class="t-big num">${v == null ? '잔액을 넣어 주세요' : won(v)}</div>
     <span class="t-sub">${ago(S.money.balanceAt?.[bankId]).replace(' 입력', ' 업데이트')}</span>
-    <div class="t-btns"><button class="t-btn primary" id="acEdit">잔액 고치기</button><button class="t-btn" id="acAdd">내역 추가</button></div>
+    <div class="t-btns three"><button class="t-btn primary" id="acMove">이체</button><button class="t-btn" id="acEdit">잔액 고치기</button><button class="t-btn" id="acAdd">내역 추가</button></div>
     ${mine.length ? `<div class="t-head small"><b>${UI.mm + 1}월 이 통장 내역</b><span class="num">${mine.length}</span></div>${mine.map(x => txRowHTML(mk, x)).join('')}` : ''}
+    ${moves.length ? `<div class="t-head small"><b>${UI.mm + 1}월 이체</b><span class="num">${moves.length}</span></div>${moves.map(x => trRowHTML(mk, x, bankId)).join('')}` : ''}
     ${balHistHTML(bankId)}`, body => {
     body.querySelector('#acEdit').addEventListener('click', () => balanceSheet(bankId));
+    body.querySelector('#acMove').addEventListener('click', () => transferSheet(bankId));
     body.querySelector('#acAdd').addEventListener('click', () => expenseSheet(TODAY.slice(0, 7), null, bankId));
     body.addEventListener('click', e => {
       const ex = e.target.closest('[data-exp]');
       if (ex) { const [m, id] = ex.dataset.exp.split('|'); expenseSheet(m, id); }
+      const tr = e.target.closest('[data-tr]');
+      if (tr) { const [m, id] = tr.dataset.tr.split('|'); transferDetailSheet(m, id); }
     });
   }, 'toss');
 }
@@ -1157,7 +1312,7 @@ async function backup(btn) {
   btn.textContent = '모으는 중…';
   try {
     const out = { app: '일상 매니저', exportedAt: new Date().toISOString() };
-    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'balhist', 'chatlog', 'log', 'chat']) {
+    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'chatlog', 'log', 'chat']) {
       const snap = await DB.collection(col).get();
       out[col] = Object.fromEntries(snap.docs.map(d => [d.id, d.data()]));
     }
@@ -1761,6 +1916,10 @@ $view.addEventListener('click', e => {
   const addEx = e.target.closest('[data-add-expense]');
   if (addEx) { expenseSheet(addEx.dataset.addExpense || TODAY.slice(0, 7), null); return; }
   if (e.target.closest('[data-bal-all]')) { balanceAllSheet(); return; }
+  const trf = e.target.closest('[data-transfer]');
+  if (trf) { transferSheet(trf.dataset.transfer || null); return; }
+  const trr = e.target.closest('[data-tr]');
+  if (trr) { const [m, id] = trr.dataset.tr.split('|'); transferDetailSheet(m, id); return; }
   if (e.target.closest('[data-savings]')) { savingsSheet(); return; }
   if (e.target.closest('[data-stock]')) { stockSheet(); return; }
   const ac = e.target.closest('[data-add-card]');
@@ -1832,6 +1991,7 @@ function instructions() {
 - 기록을 바꿀 때는 반드시 도구를 써. 도구가 성공하지 않았으면 했다고 말하지 마.
 - 사용자가 말하지 않은 내용을 지어내지 마. 날짜나 양이 애매하면 넣기 전에 물어봐.
 - '오늘', '내일', '토요일' 같은 말은 아래 날짜를 기준으로 YYYY-MM-DD로 바꿔.
+- 내 통장끼리 돈을 옮겼다고 하면 transfer로 기록해(소비가 아님).
 - 돈을 썼다고 하면 add_expense로 날짜·금액·내용을 기록해. 카드로 긁었으면 method '나라사랑카드'. 통장을 말하면 bank에 넣어.
 - 시간이 걸리는 할 일은 minutes(분)에, 개수 같은 양은 amount에 넣어. 사이트 개발은 kind "dev", 운동은 kind "workout", 감사한 점 3개는 kind "thanks".
 - 감사한 점은 그날 자정 전까지만 적을 수 있고, 지나면 탈락이야.
@@ -2053,6 +2213,24 @@ function makeTools(before, acts) {
       },
     },
     {
+      name: 'transfer',
+      description: 'Moves money between the user\'s own bank accounts (농협, 카카오뱅크, 신한) after they actually transferred it. Only balances move; it is not spending or income.',
+      inputSchema: { type: 'object', properties: {
+        from: { type: 'string', enum: BANKS.map(b => b.name) }, to: { type: 'string', enum: BANKS.map(b => b.name) }, amount: { type: 'number' }, memo: { type: 'string' },
+      }, required: ['from', 'to', 'amount'] },
+      execute: async input => {
+        const f = BANKS.find(b => b.name === input.from || b.id === input.from), t = BANKS.find(b => b.name === input.to || b.id === input.to);
+        const amt = Math.round(Number(input.amount));
+        if (!f || !t || f.id === t.id) throw new Error('보내는 통장과 받는 통장을 서로 다르게 골라 주세요');
+        if (!(amt > 0)) throw new Error('amount는 0보다 큰 원 단위 숫자예요');
+        keep('money/main', S.money);
+        keep(`transfers/${TODAY.slice(0, 7)}`, S.transfers[TODAY.slice(0, 7)]?.items);
+        await doTransfer(f.id, t.id, amt, input.memo ? String(input.memo).slice(0, 30) : '');
+        acts.push(`이체 ${f.name} → ${t.name} ${won(amt)}`);
+        return { ok: true, from: S.money.balances[f.id], to: S.money.balances[t.id] };
+      },
+    },
+    {
       name: 'add_income',
       description: 'Records money that came in (salary, transfer in): date (YYYY-MM-DD), amount in won, title, optional bank.',
       inputSchema: { type: 'object', properties: {
@@ -2117,6 +2295,7 @@ async function undoTurn(at) {
       else if (col === 'settings') await putSplit(val.split);
       else if (col === 'money') await putMoney(val);
       else if (col === 'spend') await putSpend(id, val || []);
+      else if (col === 'transfers') await putTransfers(id, val || []);
     }
     delete UI.undo[at];
     logAct('매니저가 한 일을 되돌림');
