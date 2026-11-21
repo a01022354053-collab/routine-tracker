@@ -24,6 +24,14 @@
   --lime: #8cff4a;
   --violet: #a084ff;
   --red: #ff4d6a;
+  /* 돈 관리 화면은 토스 다크 모드처럼 */
+  --t-card: rgba(32, 32, 39, .96);
+  --t-card-2: #2c2c35;
+  --t-text: #ececef;
+  --t-sub: #9e9ea7;
+  --t-blue: #3182f6;
+  --t-blue-text: #5fa2ff;
+  --t-red: #f04452;
   --on-yellow: #1d1600;
 
   --font: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
@@ -508,6 +516,86 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .img-chip button svg { width: 14px; height: 14px; }
 .attach { flex: none; width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; background: var(--glass-2); border: 1px solid var(--edge); color: var(--ink); }
 .attach svg { width: 22px; height: 22px; }
+
+/* ---------- 돈 관리: 토스 다크 모드 ---------- */
+.toss-view { gap: 12px; }
+.money-col { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.t-card {
+  background: var(--t-card); border-radius: 24px; padding: 22px 20px;
+  display: grid; gap: 4px; color: var(--t-text);
+}
+.t-label { font-size: 15px; font-weight: 600; color: var(--t-sub); }
+.t-big { font-family: var(--font); font-size: 30px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.3; }
+.t-sub { font-size: 14px; color: var(--t-sub); }
+.t-sub b { color: var(--t-text); font-weight: 700; }
+.t-say { margin: 6px 0 2px; font-size: 15px; font-weight: 600; color: var(--t-text); }
+.t-say em, .t-sub .bad { font-style: normal; font-weight: 800; }
+.t-say .good { color: var(--t-blue-text); }
+.t-say .bad, .t-sub .bad { color: var(--t-red); }
+.t-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
+.t-btn {
+  height: 48px; border-radius: 14px; font-size: 16px; font-weight: 700;
+  background: var(--t-card-2); color: var(--t-text);
+  transition: transform .15s var(--pop), filter .15s;
+}
+.t-btn:active { transform: scale(.96); filter: brightness(.9); }
+.t-btn.primary { background: var(--t-blue); color: #fff; }
+.t-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 6px; }
+.t-head b { font-size: 18px; font-weight: 700; }
+.t-head > span { font-size: 15px; font-weight: 700; color: var(--t-sub); }
+.t-head.small { margin: 18px 0 4px; }
+.t-head.small b { font-size: 15px; }
+.t-mini { margin-left: auto; font-size: 14px; font-weight: 700; color: var(--t-blue-text); padding: 4px 2px; }
+.t-row {
+  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 14px; align-items: center;
+  padding: 11px 6px; margin: 0 -6px; border-radius: 14px; text-align: left; color: var(--t-text);
+  transition: background .15s;
+}
+.t-row:hover, .t-row:active { background: rgba(255, 255, 255, .04); }
+.t-row > svg { width: 18px; height: 18px; color: var(--t-sub); }
+.t-row .ico, .t-cat .ico, .t-acct-head .ico {
+  width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--t-card-2); font-size: 19px;
+}
+.t-row .ico.bank, .t-acct-head .ico.bank { background: var(--b); color: #111; font-size: 15px; font-weight: 900; }
+.t-row .txt { display: grid; gap: 2px; min-width: 0; }
+.t-row .txt b { font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-row .txt small { font-size: 13px; color: var(--t-sub); }
+.t-row.acct .txt b { font-size: 17px; font-weight: 700; }
+.t-row.link .txt b { font-size: 15px; color: var(--t-blue-text); }
+.t-row .amt { font-size: 16px; font-weight: 700; }
+.t-row .amt.in, .t-kv .in { color: var(--t-blue-text); }
+.t-bar { height: 8px; border-radius: 99px; background: var(--t-card-2); overflow: hidden; margin: 12px 0 6px; }
+.t-bar i { display: block; height: 100%; border-radius: inherit; background: var(--t-blue); transform-origin: left; animation: grow .9s var(--out) both .2s; }
+.t-bar.over i { background: var(--t-red); }
+.t-kv { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 7px 0; font-size: 15px; color: var(--t-sub); }
+.t-kv b { color: var(--t-text); font-weight: 700; }
+.t-cats { display: grid; gap: 2px; margin-top: 14px; }
+.t-cat { display: grid; grid-template-columns: 40px 1fr auto; gap: 14px; align-items: center; padding: 8px 0; font-size: 16px; font-weight: 600; }
+.t-cat .ico { background: color-mix(in srgb, var(--cc) 22%, var(--t-card-2)); }
+.t-cat .nm small { margin-left: 8px; font-size: 13px; font-weight: 600; color: var(--t-sub); }
+.t-month { display: flex; margin: -8px 0 6px -8px; }
+.t-month .nav-btn { color: var(--t-sub); }
+.t-month b { font-family: var(--font); font-size: 15px; font-weight: 700; min-width: 4.6em; color: var(--t-text); }
+.t-day { font-size: 14px; font-weight: 600; color: var(--t-sub); padding: 16px 0 4px; }
+.t-day:first-of-type { padding-top: 4px; }
+.t-empty { margin: 8px 0; font-size: 15px; color: var(--t-sub); }
+
+/* 토스 스타일 시트 */
+.sheet.toss { background: #202027; border-color: transparent; gap: 14px; color: var(--t-text); }
+.sheet.toss .grip { background: #3a3a44; }
+.sheet.toss .field, .sheet.toss .area { background: var(--t-card-2); border-color: transparent; border-radius: 14px; }
+.sheet.toss .field:focus { border-color: var(--t-blue); background: #30303a; }
+.sheet.toss .btn { background: var(--t-blue); color: #fff; box-shadow: none; }
+.sheet.toss .btn.ghost { background: var(--t-card-2); color: var(--t-text); border: 0; }
+.sheet.toss .pchip { background: var(--t-card-2); border-color: transparent; color: var(--t-text); }
+.sheet.toss .pchip[aria-pressed="true"] { background: var(--t-blue); color: #fff; }
+.sheet.toss .seg { background: var(--t-card-2); }
+.sheet.toss .seg button[aria-pressed="true"] { background: #3f3f4a; }
+.sheet.toss .sh-head .q-icon { background: var(--t-card-2); box-shadow: none; }
+.sheet.toss .sh-sec > .label { color: var(--t-sub); font-weight: 600; }
+.t-acct-head { display: flex; align-items: center; gap: 10px; font-size: 16px; }
+.sheet.toss .t-big { font-size: 32px; }
 
 /* ---------- 빈 화면 ---------- */
 .soon { display: grid; justify-items: center; gap: 14px; padding: 48px 16px; text-align: center; }

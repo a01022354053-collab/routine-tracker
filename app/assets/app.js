@@ -603,94 +603,137 @@ function ago(iso) {
   return days <= 0 ? `오늘 ${pad(t.getHours())}:${pad(t.getMinutes())} 입력` : days === 1 ? '어제 입력' : `${days}일 전 입력`;
 }
 
+// 돈 관리 화면만 토스 다크 모드처럼: 납작한 카드, 큰 숫자, 토스 파랑, 친근한 문장
+const latestAt = () => Object.values(S.money.balanceAt || {}).filter(Boolean).sort().pop();
+const shortAgo = iso => (iso ? ago(iso).replace(' 입력', ' 업데이트') : '');
+const dayLabelT = d => `${parseKey(d).getDate()}일 ${DAY[parseKey(d).getDay()]}요일`;
+
+function txRowHTML(mk, x) {
+  const inc = x.type === 'in', c = inc ? { emoji: '💵', name: '입금' } : catOf(x.cat);
+  const t = x.at ? new Date(x.at) : null;
+  const sub = [bankName(x.bank), c.name].filter(Boolean).join(' · ');
+  return `<button class="t-row tx" data-exp="${mk}|${esc(x.id)}">
+    <span class="ico"><span class="emoji" aria-hidden="true">${c.emoji}</span></span>
+    <span class="txt"><b>${esc(x.title)}</b><small>${esc(sub)}</small></span>
+    <span class="amt num ${inc ? 'in' : ''}">${inc ? '+' : '-'}${won(x.amount)}</span>
+  </button>`;
+}
+
 function viewMoney() {
   const M = S.money, p = payInfo();
   const known = BANKS.filter(b => M.balances[b.id] != null);
   const sum = known.reduce((s, b) => s + Number(M.balances[b.id] || 0), 0);
-  return `
-    <div class="view-title anim" style="--i:0">${ICON.star}<h1>돈 관리</h1></div>
-    ${ready() ? '' : statusPanel(1)}
-    <div class="money-grid">
-      <section class="panel asset anim" style="--i:1">
-        <div class="asset-top"><span class="eyebrow">내 자산</span><button class="chip soft" data-bal-all>잔액 한 번에 입력</button></div>
-        <div class="asset-sum disp num"${known.length ? wonAttr(sum) : '>–'}</div>
-        <span class="asset-sub">${known.length < BANKS.length ? `통장 ${BANKS.length}개 중 ${known.length}개 입력됨` : `통장 ${BANKS.length}개 합계`}</span>
-        <div class="acct-list">${BANKS.map(b => {
-          const v = M.balances[b.id];
-          return `<button class="acct-row" data-acct="${b.id}" style="--b:${b.color}">
-            <span class="bank">${b.short}</span>
-            <span class="who"><b>${b.name}</b><small>${ago(M.balanceAt?.[b.id])}</small></span>
-            <span class="bal num${v == null ? ' none' : ''}">${v == null ? '입력하기' : won(v)}</span>
-            ${ICON.next}
-          </button>`;
-        }).join('')}</div>
-        ${UI.imgOK ? '<button class="btn ghost cap" data-capture><span class="emoji" aria-hidden="true">📷</span> 은행 앱 캡처로 넣기</button>' : ''}
-        ${balHistHTML()}
-      </section>
-      ${spendHTML(2)}
-      <section class="panel pay anim" style="--i:3">
-        <div class="pay-top">
-          <div><span class="eyebrow">월급날 · 매달 ${M.payday}일</span>
-            <div class="dday">${p.left === 0 ? 'D-DAY' : `D-${p.left}`}</div>
-            <span class="sub num">${p.next.getMonth() + 1}월 ${p.next.getDate()}일 ${DAY[p.next.getDay()]}요일</span></div>
-        </div>
-        <div class="cycle" role="img" aria-label="월급 주기 ${p.pct}% 지남"><i style="width:${p.pct}%"></i></div>
-        <div class="plan-rows">
-          <div class="plan-row"><span class="tile"><span class="emoji" aria-hidden="true">🏦</span></span><div><b>적금</b><small>월급날 자동이체</small></div><span class="amt num" style="color:var(--cyan)">${manwon(M.savings)}</span></div>
-          <div class="plan-row"><span class="tile"><span class="emoji" aria-hidden="true">💳</span></span><div><b>쓸 수 있는 돈</b><small>한 달 실제 사용</small></div><span class="amt num" style="color:var(--yellow)">${manwon(M.spend)}</span></div>
-        </div>
-      </section>
-      ${txHTML(4)}
-    </div>`;
-}
-
-function spendHTML(i) {
-  const mk = monthKey(UI.my, UI.mm), out = spendOf(mk).filter(x => x.type !== 'in');
-  const total = spentIn(mk), income = incomeIn(mk), budget = S.money.spend || 0;
+  const mk = monthKey(UI.my, UI.mm), isNow = mk === TODAY.slice(0, 7);
+  const items = spendOf(mk), out = items.filter(x => x.type !== 'in');
+  const total = spentIn(mk), income = incomeIn(mk), budget = M.spend || 0;
   const left = budget - total, pct = budget ? Math.min(100, Math.round((total / budget) * 100)) : 0;
+
+  // 지난달 같은 기간과 비교 (지난 달을 보고 있으면 그 전 달 전체와)
+  const prev = new Date(UI.my, UI.mm - 1, 1), pk = monthKey(prev.getFullYear(), prev.getMonth());
+  const upto = isNow ? parseKey(TODAY).getDate() : 31;
+  const prevItems = spendOf(pk).filter(x => x.type !== 'in' && parseKey(x.date).getDate() <= upto);
+  const prevTotal = prevItems.reduce((s, x) => s + x.amount, 0);
+  const diff = total - prevTotal;
+  const compare = !prevItems.length ? '' : diff === 0 ? '지난달과 똑같이 썼어요'
+    : `${isNow ? '지난달 같은 기간보다' : '전달보다'} <em class="${diff < 0 ? 'good' : 'bad'}">${won(Math.abs(diff))} ${diff < 0 ? '덜' : '더'}</em> 썼어요`;
+
   const byCat = {};
   out.forEach(x => { byCat[x.cat || 'etc'] = (byCat[x.cat || 'etc'] || 0) + x.amount; });
   const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
-  return `<section class="panel anim spend" style="--i:${i}">
-    <div class="map-head" style="margin:0">${monthNav(UI.my, UI.mm, 'money')}</div>
-    <div class="spend-top">
-      <div><span class="eyebrow">${UI.mm + 1}월 소비</span><div class="spent num"${wonAttr(total)}</div></div>
-      <div class="left num ${left < 0 ? 'over' : ''}">${budget ? (left >= 0 ? `${won(left)} 남음` : `${won(-left)} 넘음`) : ''}<small>${budget ? `${manwon(budget)} 중` : ''}</small></div>
-    </div>
-    <div class="cycle spendbar ${left < 0 ? 'over' : ''}" role="img" aria-label="쓸 돈의 ${pct}% 사용"><i style="width:${pct}%"></i></div>
-    ${cats.length ? `<div class="catbar" role="img" aria-label="분류별 소비">${cats.map(([c, v]) => `<i style="flex:${v}; background:${catOf(c).c}"></i>`).join('')}</div>
-      <div class="cat-list">${cats.map(([c, v]) => `<div class="cat-row"><span class="emoji" aria-hidden="true">${catOf(c).emoji}</span><b>${catOf(c).name}</b><span class="pct num">${Math.round((v / total) * 100)}%</span><span class="num">${won(v)}</span></div>`).join('')}</div>` : ''}
-    ${income ? `<div class="income-row"><span>${UI.mm + 1}월에 들어온 돈</span><b class="num">+${won(income)}</b></div>` : ''}
-  </section>`;
-}
-
-function txHTML(i) {
-  const mk = monthKey(UI.my, UI.mm), items = spendOf(mk);
   const byDay = {};
   items.forEach(x => (byDay[x.date] = byDay[x.date] || []).push(x));
   const days = Object.keys(byDay).sort().reverse();
-  return `<section class="panel anim wide tx" style="--i:${i}">
-    <div class="tx-head"><h2>${UI.mm + 1}월 내역</h2><button class="chip" data-add-expense="${mk}">+ 기록</button></div>
-    ${days.length ? days.map(d => `
-      <div class="tx-day"><div class="tx-date"><b>${dotDate(d)} ${DAY[parseKey(d).getDay()]}</b></div>
-        ${byDay[d].slice().reverse().map(x => {
-          const inc = x.type === 'in', c = inc ? { emoji: '💵', name: '입금' } : catOf(x.cat);
-          const sub = [bankName(x.bank), c.name].filter(Boolean).join(' · ');
-          return `<button class="tx-row" data-exp="${mk}|${esc(x.id)}">
-            <span class="tile"><span class="emoji" aria-hidden="true">${c.emoji}</span></span>
-            <span class="who"><b>${esc(x.title)}</b><small>${esc(sub)}</small></span>
-            <span class="amt num ${inc ? 'in' : ''}">${inc ? '+' : '-'}${won(x.amount)}</span>
-          </button>`;
-        }).join('')}
-      </div>`).join('') : `<p class="empty">${mk === TODAY.slice(0, 7) ? '아직 기록한 내역이 없어요' : '이 달에는 내역이 없어요'}</p>`}
-  </section>`;
+
+  return `
+    <div class="view-title anim" style="--i:0">${ICON.star}<h1>돈 관리</h1></div>
+    ${ready() ? '' : statusPanel(1)}
+    <div class="money-grid toss-view">
+      <div class="money-col">
+        <section class="t-card anim" style="--i:1">
+          <span class="t-label">내 자산</span>
+          <div class="t-big num"${known.length ? wonAttr(sum) : '>아직 몰라요'}</div>
+          <span class="t-sub">${known.length < BANKS.length ? `통장 ${BANKS.length}개 중 ${known.length}개 입력` : `통장 ${BANKS.length}개`}${latestAt() ? ` · ${shortAgo(latestAt())}` : ''}</span>
+          <div class="t-btns">
+            <button class="t-btn primary" data-bal-all>잔액 입력</button>
+            <button class="t-btn" data-add-expense="${TODAY.slice(0, 7)}">내역 추가</button>
+          </div>
+        </section>
+
+        <section class="t-card anim" style="--i:2">
+          <div class="t-head"><b>계좌</b><span class="num">${BANKS.length}</span></div>
+          ${BANKS.map(b => {
+            const v = M.balances[b.id];
+            return `<button class="t-row acct" data-acct="${b.id}" style="--b:${b.color}">
+              <span class="ico bank">${b.short}</span>
+              <span class="txt"><small>${b.name}</small><b class="num">${v == null ? '잔액을 넣어 주세요' : won(v)}</b></span>
+              ${ICON.next}
+            </button>`;
+          }).join('')}
+          ${UI.imgOK ? `<button class="t-row link" data-capture><span class="ico"><span class="emoji" aria-hidden="true">📷</span></span><span class="txt"><b>은행 앱 캡처로 넣기</b><small>사진을 보내면 매니저가 읽어 넣어요</small></span>${ICON.next}</button>` : ''}
+        </section>
+
+        <section class="t-card anim" style="--i:3">
+          <span class="t-label">월급날까지</span>
+          <div class="t-big num">${p.left === 0 ? '오늘이에요' : `${p.left}일`}</div>
+          <span class="t-sub num">${p.next.getMonth() + 1}월 ${p.next.getDate()}일 ${DAY[p.next.getDay()]}요일 · 매달 ${M.payday}일</span>
+          <div class="t-bar"><i style="width:${p.pct}%"></i></div>
+          <div class="t-kv"><span>적금 (자동이체)</span><b class="num">${won(M.savings)}</b></div>
+          <div class="t-kv"><span>한 달 쓸 수 있는 돈</span><b class="num">${won(M.spend)}</b></div>
+        </section>
+      </div>
+
+      <div class="money-col">
+        <section class="t-card anim" style="--i:4">
+          <div class="t-month">${monthNav(UI.my, UI.mm, 'money')}</div>
+          <span class="t-label">${UI.mm + 1}월 소비</span>
+          <div class="t-big num"${wonAttr(total)}</div>
+          ${compare ? `<p class="t-say">${compare}</p>` : ''}
+          ${budget ? `<div class="t-bar ${left < 0 ? 'over' : ''}"><i style="width:${pct}%"></i></div>
+            <p class="t-sub">${left >= 0 ? `예산 ${manwon(budget)} 중 <b class="num">${won(left)}</b> 남았어요` : `예산 ${manwon(budget)}을 <b class="num bad">${won(-left)}</b> 넘었어요`}</p>` : ''}
+          ${cats.length ? `<div class="t-cats">${cats.map(([c, v]) => `
+            <div class="t-cat"><span class="ico" style="--cc:${catOf(c).c}"><span class="emoji" aria-hidden="true">${catOf(c).emoji}</span></span>
+              <span class="nm">${catOf(c).name}<small class="num">${Math.round((v / total) * 100)}%</small></span>
+              <span class="num">${won(v)}</span></div>`).join('')}</div>` : ''}
+          ${income ? `<div class="t-kv"><span>${UI.mm + 1}월 들어온 돈</span><b class="num in">+${won(income)}</b></div>` : ''}
+        </section>
+
+        <section class="t-card anim" style="--i:5">
+          <div class="t-head"><b>${UI.mm + 1}월 내역</b><span class="num">${items.length}</span><button class="t-mini" data-add-expense="${mk}">추가</button></div>
+          ${days.length ? days.map(d => `
+            <div class="t-day">${dayLabelT(d)}</div>
+            ${byDay[d].slice().reverse().map(x => txRowHTML(mk, x)).join('')}`).join('')
+            : `<p class="t-empty">${isNow ? '아직 기록한 내역이 없어요' : '이 달에는 내역이 없어요'}</p>`}
+        </section>
+      </div>
+    </div>`;
 }
 
-function balHistHTML() {
-  const mk = monthKey(UI.my, UI.mm), items = (S.balhist[mk]?.items || []).slice().reverse();
+function balHistHTML(bankId) {
+  const mk = monthKey(UI.my, UI.mm);
+  const items = (S.balhist[mk]?.items || []).filter(x => !bankId || x.bank === bankId).slice().reverse();
   if (!items.length) return '';
-  return `<details class="hist"><summary><b>${UI.mm + 1}월 잔액 기록</b><span class="cnt num">${items.length}건</span></summary>
-    <ul>${items.map(x => { const t = new Date(x.at); return `<li><span class="tm num">${pad(t.getMonth() + 1)}.${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}</span><span class="tx">${bankName(x.bank)} ${x.amount == null ? '지움' : won(x.amount)}</span></li>`; }).join('')}</ul></details>`;
+  return `<div class="t-head small"><b>${UI.mm + 1}월 잔액 기록</b><span class="num">${items.length}</span></div>
+    ${items.map(x => { const t = new Date(x.at); return `<div class="t-kv"><span class="num">${t.getMonth() + 1}.${t.getDate()} ${pad(t.getHours())}:${pad(t.getMinutes())}${bankId ? '' : ` · ${bankName(x.bank)}`}</span><b class="num">${x.amount == null ? '지움' : won(x.amount)}</b></div>`; }).join('')}`;
+}
+
+// 토스의 계좌 상세처럼: 큰 잔액, 고치기, 이 통장 내역과 잔액 기록
+function accountSheet(bankId) {
+  const b = BANKS.find(x => x.id === bankId), v = S.money.balances[bankId];
+  const mk = monthKey(UI.my, UI.mm);
+  const mine = spendOf(mk).filter(x => x.bank === bankId).slice().reverse();
+  openSheet(`<div class="t-acct-head" style="--b:${b.color}"><span class="ico bank">${b.short}</span><b>${b.name}</b></div>
+    <div class="t-big num">${v == null ? '잔액을 넣어 주세요' : won(v)}</div>
+    <span class="t-sub">${ago(S.money.balanceAt?.[bankId]).replace(' 입력', ' 업데이트')}</span>
+    <div class="t-btns"><button class="t-btn primary" id="acEdit">잔액 고치기</button><button class="t-btn" id="acAdd">내역 추가</button></div>
+    ${mine.length ? `<div class="t-head small"><b>${UI.mm + 1}월 이 통장 내역</b><span class="num">${mine.length}</span></div>${mine.map(x => txRowHTML(mk, x)).join('')}` : ''}
+    ${balHistHTML(bankId)}`, body => {
+    body.querySelector('#acEdit').addEventListener('click', () => balanceSheet(bankId));
+    body.querySelector('#acAdd').addEventListener('click', () => expenseSheet(TODAY.slice(0, 7), null, bankId));
+    body.addEventListener('click', e => {
+      const ex = e.target.closest('[data-exp]');
+      if (ex) { const [m, id] = ex.dataset.exp.split('|'); expenseSheet(m, id); }
+    });
+  }, 'toss');
 }
 
 // 통장 셋을 한 화면에서 입력
@@ -702,6 +745,7 @@ function balanceAllSheet() {
         <span class="numfield"><input class="field" data-bal="${b.id}" inputmode="numeric" placeholder="0" value="${S.money.balances[b.id] ?? ''}"><span>원</span></span></label>`).join('')}
     </div>
     <button class="btn" id="balAllSave">저장</button>`, body => {
+    setTimeout(() => body.querySelector('[data-bal]')?.focus(), 320);
     body.querySelectorAll('[data-bal]').forEach(i => i.addEventListener('input', () => { i.value = i.value.replace(/[^\d]/g, ''); }));
     body.querySelector('#balAllSave').addEventListener('click', async () => {
       try {
@@ -714,14 +758,14 @@ function balanceAllSheet() {
         closeSheet();
       } catch (e) { saveFail(); }
     });
-  });
+  }, 'toss');
 }
 
 // 지출·입금 기록하기/고치기
-function expenseSheet(mk, id) {
+function expenseSheet(mk, id, presetBank) {
   const cur = id ? (S.spend[mk]?.items || []).find(x => x.id === id) : null;
   const banks = [...BANKS.map(b => ({ id: b.id, name: b.name })), { id: 'cash', name: '현금' }];
-  const f = { type: cur?.type === 'in' ? 'in' : 'out', bank: cur?.bank || '', cat: cur?.cat || '' };
+  const f = { type: cur?.type === 'in' ? 'in' : 'out', bank: cur?.bank || presetBank || '', cat: cur?.cat || '' };
   const defDate = cur?.date || (mk === TODAY.slice(0, 7) ? TODAY : `${mk}-01`);
   openSheet(`<div class="sh-head" style="--c:var(--lime)"><span class="q-icon"><span class="emoji" aria-hidden="true" id="exIcon">${f.type === 'in' ? '💵' : '💸'}</span></span>
       <div><h3>${cur ? '내역 고치기' : '내역 기록'}</h3><p>${cur ? `${dotDate(cur.date)} 기록` : '기록해 두면 달마다 모여요'}</p></div></div>
@@ -784,7 +828,7 @@ function expenseSheet(mk, id) {
         closeSheet();
       } catch (e) { saveFail(); }
     });
-  });
+  }, 'toss');
 }
 
 // 저장소의 모든 기록을 한 JSON 파일로
@@ -1030,7 +1074,8 @@ async function toggleDone(card) {
 const $sheet = document.getElementById('sheet');
 const $sheetBody = document.getElementById('sheetBody');
 let sheetTick = null;
-function openSheet(html, mount) {
+function openSheet(html, mount, cls = '') {
+  $sheetBody.className = `sheet${cls ? ` ${cls}` : ''}`;
   $sheetBody.innerHTML = `<div class="grip" aria-hidden="true"></div>${html}`;
   $sheet.classList.add('open');
   $sheet.inert = false;
@@ -1341,7 +1386,7 @@ function balanceSheet(bankId) {
       const raw = input.value.trim();
       try { await setBalance(bankId, raw === '' ? null : Number(raw)); toast(`${b.name} 잔액을 저장했어요`); closeSheet(); } catch (e) { saveFail(); }
     });
-  });
+  }, 'toss');
 }
 
 /* ---------- 화면 안 클릭 ---------- */
@@ -1395,7 +1440,7 @@ $view.addEventListener('click', e => {
     return;
   }
   const acct = e.target.closest('[data-acct]');
-  if (acct) { balanceSheet(acct.dataset.acct); return; }
+  if (acct) { accountSheet(acct.dataset.acct); return; }
   const addEx = e.target.closest('[data-add-expense]');
   if (addEx) { expenseSheet(addEx.dataset.addExpense || TODAY.slice(0, 7), null); return; }
   if (e.target.closest('[data-bal-all]')) { balanceAllSheet(); return; }
