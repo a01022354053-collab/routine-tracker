@@ -67,6 +67,8 @@ const S = {
   balhist: {},    // 'YYYY-MM' → 잔액 기록
   savings: clone(DEFAULT_SAVINGS),   // 군적금
   transfers: {},  // 'YYYY-MM' → 통장끼리 옮긴 기록
+  items: { list: [] },     // 내 물건(자주 쓰는 것)
+  shopping: { list: [] },  // 필요한 물건(살 것)
   stocks: clone(DEFAULT_STOCKS),     // 주식
 };
 const UI = {
@@ -223,6 +225,19 @@ async function cancelTransfer(mk, id) {
   await putTransfers(mk, items);
   logAct(`이체 취소 · ${bankName(x.from)} → ${bankName(x.to)} ${won(x.amount)} (${dotDate(x.date)})`);
 }
+
+async function putItems(v) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.items = clone(v); refresh();
+  return queue('items/main', () => DB.doc('items/main').set(v));
+}
+async function putShopping(v) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.shopping = clone(v); refresh();
+  return queue('shopping/main', () => DB.doc('shopping/main').set(v));
+}
+const itemsOf = () => (S.items.list || []).filter(x => !x.removed);
+const shopOf = () => (S.shopping.list || []).filter(x => !x.removed);
 
 async function putStocks(v) {
   if (!DB) throw new Error('저장소에 연결되지 않았어요');
@@ -395,6 +410,18 @@ async function connect() {
     const v = { ...clone(DEFAULT_STOCKS), ...(d.data() || {}) };
     if (same(v, S.stocks)) return;
     S.stocks = v;
+    refresh();
+  }, () => {});
+  DB.doc('items/main').onSnapshot(d => {
+    const v = { list: [], ...(d.data() || {}) };
+    if (same(v, S.items)) return;
+    S.items = v;
+    refresh();
+  }, () => {});
+  DB.doc('shopping/main').onSnapshot(d => {
+    const v = { list: [], ...(d.data() || {}) };
+    if (same(v, S.shopping)) return;
+    S.shopping = v;
     refresh();
   }, () => {});
   DB.collection('transfers').onSnapshot(snap => {
@@ -906,7 +933,8 @@ function viewMoney() {
               if (!q) { const at = st.rows.map(r => r.priceAt).filter(Boolean).sort().pop(); return at ? `현재가 ${ago(at)} · 직접 넣은 값` : '현재가를 기다리는 중'; }
               const t = new Date(q.tradedAt);
               const when = `${t.getMonth() + 1}월 ${t.getDate()}일 ${DAY[t.getDay()]}`;
-              return `${when} ${q.status === 'OPEN' ? `${pad(t.getHours())}:${pad(t.getMinutes())} 시세` : '장 마감 가격'} · 네이버 증권 · 평일 장중에 자동으로 갱신돼요`;
+              const sess = q.session && q.session !== '정규장' ? `${q.session} ` : '';
+              return `${when} ${q.status === 'OPEN' ? `${sess}${pad(t.getHours())}:${pad(t.getMinutes())} 시세` : `${sess || ''}${sess ? '' : '장 '}마감 가격`} · 평일 9:47·11:47·13:47·15:47 자동 갱신`;
             })()}</span>`
           : '<p class="t-empty">아직 넣은 종목이 없어요</p>'}
         </section>
@@ -1312,7 +1340,7 @@ async function backup(btn) {
   btn.textContent = '모으는 중…';
   try {
     const out = { app: '일상 매니저', exportedAt: new Date().toISOString() };
-    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'chatlog', 'log', 'chat']) {
+    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'chatlog', 'log', 'chat']) {
       const snap = await DB.collection(col).get();
       out[col] = Object.fromEntries(snap.docs.map(d => [d.id, d.data()]));
     }
@@ -1338,6 +1366,162 @@ function viewFixed() {
         </div>
       </div>
     </section>`;
+}
+
+/* ---------- 내 물건 · 필요한 물건 ---------- */
+// 사진이 있는 물건은 나라사랑카드처럼 손가락을 따라 기우는 입체 카드로
+function prod3dHTML(x) {
+  return `<div class="card3d prod" data-card3d><div class="card3d-float"><div class="card3d-in">
+    <img src="${esc(x.image)}" alt="${esc(x.name)}" draggable="false"><span class="card3d-shine" aria-hidden="true"></span>
+  </div></div></div>`;
+}
+
+function viewItems() {
+  const list = itemsOf(), sum = list.reduce((s, x) => s + (Number(x.price) || 0), 0);
+  return `
+    <div class="view-title anim" style="--i:0">${ICON.star}<h1>내 물건</h1></div>
+    ${ready() ? '' : statusPanel(1)}
+    <div class="toss-view items-view">
+      <section class="t-card anim" style="--i:1">
+        <span class="t-label">자주 쓰는 물건 ${list.length}개</span>
+        <div class="t-big num">${list.length ? won(sum) : '아직 없어요'}</div>
+        <span class="t-sub">${list.length ? '하나씩 다 다시 사면 드는 돈이에요' : '쓰는 물건과 가격을 넣어 두면 떨어졌을 때 바로 살 것에 넣을 수 있어요'}</span>
+      </section>
+      <div class="item-grid">
+        ${list.map((x, i) => `<article class="t-card item-card anim" style="--i:${2 + i}" data-item="${esc(x.id)}">
+          ${x.image ? prod3dHTML(x) : `<div class="item-noimg"><span class="emoji" aria-hidden="true">${esc(x.emoji || '📦')}</span></div>`}
+          <b>${esc(x.name)}</b>
+          ${x.sub ? `<small>${esc(x.sub)}</small>` : ''}
+          <span class="num price">${x.price ? won(x.price) : '가격 없음'}</span>
+        </article>`).join('')}
+        <button class="item-add anim" style="--i:${2 + list.length}" data-item-add><span class="plus" aria-hidden="true">+</span><b>물건 추가</b></button>
+      </div>
+    </div>`;
+}
+
+function viewShopping() {
+  const list = shopOf();
+  const todo = list.filter(x => !x.done), done = list.filter(x => x.done);
+  const sum = arr => arr.reduce((s, x) => s + (Number(x.price) || 0) * (Number(x.qty) || 1), 0);
+  const groups = {};
+  todo.forEach(x => (groups[x.group || '기타'] = groups[x.group || '기타'] || []).push(x));
+  const row = x => `<div class="shop-row${x.done ? ' done' : ''}">
+      <button class="shop-check" data-shop-check="${esc(x.id)}" aria-pressed="${!!x.done}" aria-label="${esc(x.name)} ${x.done ? '산 것 취소' : '샀어요'}">${ICON.check}</button>
+      <button class="shop-main" data-shop="${esc(x.id)}">
+        <b>${esc(x.name)}</b>
+        <small>${[x.option, (x.qty || 1) > 1 ? `${x.qty}개` : '', x.done && x.doneAt ? `${dotDate(keyOf(new Date(x.doneAt)))} 삼` : ''].filter(Boolean).map(esc).join(' · ')}</small>
+      </button>
+      <span class="num amt">${won((Number(x.price) || 0) * (Number(x.qty) || 1))}</span>
+    </div>`;
+  return `
+    <div class="view-title anim" style="--i:0">${ICON.star}<h1>필요한 물건</h1></div>
+    ${ready() ? '' : statusPanel(1)}
+    <div class="toss-view shop-view">
+      <section class="t-card anim" style="--i:1">
+        <span class="t-label">살 것 ${todo.length}개</span>
+        <div class="t-big num">${won(sum(todo))}</div>
+        ${done.length ? `<span class="t-sub num">이미 산 것 ${done.length}개 · ${won(sum(done))}</span>` : ''}
+        <div class="t-btns"><button class="t-btn primary" data-shop-add>살 것 추가</button><button class="t-btn" data-go-items>내 물건 보기</button></div>
+      </section>
+      ${Object.entries(groups).map(([g, arr], i) => `<section class="t-card anim" style="--i:${2 + i}">
+        <div class="t-head"><b>${esc(g)}</b><span class="num">${arr.length}</span><span class="t-mini num" style="color:var(--t-sub)">${won(sum(arr))}</span></div>
+        ${arr.map(row).join('')}
+      </section>`).join('')}
+      ${!todo.length ? '<section class="t-card anim" style="--i:2"><p class="t-empty">살 것이 없어요</p></section>' : ''}
+      ${done.length ? `<section class="t-card anim" style="--i:6"><div class="t-head"><b>산 것</b><span class="num">${done.length}</span></div>${done.map(row).join('')}</section>` : ''}
+    </div>`;
+}
+
+function itemSheet(id) {
+  const x = id ? (S.items.list || []).find(i => i.id === id) : null;
+  openSheet(`${x?.image ? `<div class="item-hero">${prod3dHTML(x)}</div>` : `<div class="tr-head"><h3>${x ? esc(x.name) : '물건 추가'}</h3><p>자주 쓰는 물건과 가격</p></div>`}
+    <div class="sh-sec"><span class="label">이름</span><input class="field" id="itName" maxlength="30" placeholder="예: 바디워시" value="${esc(x?.name || '')}"></div>
+    <div class="sh-sec"><span class="label">제품</span><input class="field" id="itSub" maxlength="40" placeholder="예: 도브 리밸런싱 1000g" value="${esc(x?.sub || '')}"></div>
+    <div class="sh-sec"><span class="label">가격</span><div class="numfield"><input class="field" id="itPrice" inputmode="numeric" placeholder="0" value="${x?.price ?? ''}"><span>원</span></div></div>
+    ${x ? `<button class="btn" id="itOut">다 떨어졌어요 · 살 것에 넣기</button>
+      <div class="btn-row"><button class="btn ghost" id="itDel">목록에서 빼기</button><button class="btn ghost" id="itSave">저장</button></div>`
+      : '<button class="btn" id="itSave">넣기</button>'}`, body => {
+    const $ = q => body.querySelector(q);
+    $('#itPrice').addEventListener('input', e => { e.target.value = e.target.value.replace(/[^\d]/g, ''); });
+    const read = () => ({ name: $('#itName').value.trim(), sub: $('#itSub').value.trim(), price: Number($('#itPrice').value) || 0 });
+    $('#itSave').addEventListener('click', async () => {
+      const v = read();
+      if (!v.name) { toast('이름을 넣어 주세요'); return; }
+      const it = clone(S.items), now = new Date().toISOString();
+      if (x) {
+        const t = it.list.find(i => i.id === id);
+        t.history = [...(t.history || []), { name: t.name, sub: t.sub, price: t.price, at: now }];
+        Object.assign(t, v);
+        logAct(`내 물건 고침 · ${v.name} ${won(v.price)}`);
+      } else {
+        it.list = [...(it.list || []), { id: newId(), ...v, at: now }];
+        logAct(`내 물건 추가 · ${v.name} ${won(v.price)}`);
+      }
+      try { await putItems(it); toast('저장했어요'); closeSheet(); } catch (e) { saveFail(); }
+    });
+    $('#itDel')?.addEventListener('click', async () => {
+      const it = clone(S.items);
+      Object.assign(it.list.find(i => i.id === id), { removed: true, removedAt: new Date().toISOString() });
+      try { await putItems(it); logAct(`내 물건 뺌 · ${x.name}`); toast('목록에서 뺐어요 (기록은 남아요)'); closeSheet(); } catch (e) { saveFail(); }
+    });
+    $('#itOut')?.addEventListener('click', async () => {
+      const sh = clone(S.shopping);
+      if (shopOf().some(s => s.fromItem === id && !s.done)) { toast('이미 살 것에 있어요'); return; }
+      sh.list = [...(sh.list || []), { id: newId(), name: x.name, option: x.sub || '', price: x.price || 0, qty: 1, group: '생활용품', fromItem: id, done: false, at: new Date().toISOString() }];
+      try { await putShopping(sh); logAct(`살 것 추가 · ${x.name} (다 떨어짐)`); toast('필요한 물건에 넣었어요'); closeSheet(); } catch (e) { saveFail(); }
+    });
+  }, 'toss');
+}
+
+function shopSheet(id) {
+  const x = id ? (S.shopping.list || []).find(i => i.id === id) : null;
+  const groups = [...new Set(['옷', '생활용품', ...shopOf().map(s => s.group).filter(Boolean)])];
+  let group = x?.group || '';
+  openSheet(`<div class="tr-head"><h3>${x ? '살 것 고치기' : '살 것 추가'}</h3><p>${x ? esc(x.name) : '사야 할 물건을 글로 적어 두어요'}</p></div>
+    <div class="sh-sec"><span class="label">이름</span><input class="field" id="spName" maxlength="60" placeholder="예: 크롭 후드 집업" value="${esc(x?.name || '')}"></div>
+    <div class="sh-sec"><span class="label">옵션</span><input class="field" id="spOpt" maxlength="40" placeholder="예: 그레이 / FREE" value="${esc(x?.option || '')}"></div>
+    <div class="sav-grid">
+      <label>가격<span class="numfield"><input class="field" id="spPrice" inputmode="numeric" placeholder="0" value="${x?.price ?? ''}"><span>원</span></span></label>
+      <label>수량<span class="numfield"><input class="field" id="spQty" inputmode="numeric" value="${x?.qty ?? 1}"><span>개</span></span></label>
+    </div>
+    <div class="sh-sec"><span class="label">묶음</span><div class="parts" id="spGroup">${groups.map(g => `<button class="pchip" data-g="${esc(g)}" aria-pressed="${g === group}">${esc(g)}</button>`).join('')}</div></div>
+    <div class="${x ? 'btn-row' : ''}">${x ? '<button class="btn ghost" id="spDel">목록에서 빼기</button>' : ''}<button class="btn" id="spSave">${x ? '저장' : '넣기'}</button></div>`, body => {
+    const $ = q => body.querySelector(q);
+    ['#spPrice', '#spQty'].forEach(q => $(q).addEventListener('input', e => { e.target.value = e.target.value.replace(/[^\d]/g, ''); }));
+    $('#spGroup').addEventListener('click', e => {
+      const b = e.target.closest('[data-g]'); if (!b) return;
+      group = group === b.dataset.g ? '' : b.dataset.g;
+      body.querySelectorAll('#spGroup [data-g]').forEach(g => g.setAttribute('aria-pressed', g.dataset.g === group));
+    });
+    $('#spSave').addEventListener('click', async () => {
+      const v = { name: $('#spName').value.trim(), option: $('#spOpt').value.trim(), price: Number($('#spPrice').value) || 0, qty: Math.max(1, Number($('#spQty').value) || 1), group };
+      if (!v.name) { toast('이름을 넣어 주세요'); return; }
+      const sh = clone(S.shopping), now = new Date().toISOString();
+      if (x) {
+        const t = sh.list.find(i => i.id === id);
+        t.history = [...(t.history || []), { name: t.name, option: t.option, price: t.price, qty: t.qty, group: t.group, at: now }];
+        Object.assign(t, v);
+        logAct(`살 것 고침 · ${v.name} ${won(v.price * v.qty)}`);
+      } else {
+        sh.list = [...(sh.list || []), { id: newId(), ...v, done: false, at: now }];
+        logAct(`살 것 추가 · ${v.name}${v.option ? ` (${v.option})` : ''} ${won(v.price * v.qty)}`);
+      }
+      try { await putShopping(sh); toast('저장했어요'); closeSheet(); } catch (e) { saveFail(); }
+    });
+    $('#spDel')?.addEventListener('click', async () => {
+      const sh = clone(S.shopping);
+      Object.assign(sh.list.find(i => i.id === id), { removed: true, removedAt: new Date().toISOString() });
+      try { await putShopping(sh); logAct(`살 것 뺌 · ${x.name}`); toast('목록에서 뺐어요 (기록은 남아요)'); closeSheet(); } catch (e) { saveFail(); }
+    });
+  }, 'toss');
+}
+
+async function toggleShop(id, btn) {
+  const sh = clone(S.shopping), t = sh.list.find(i => i.id === id);
+  if (!t) return;
+  t.done = !t.done;
+  if (t.done) { t.doneAt = new Date().toISOString(); celebrate(btn, 0); } else delete t.doneAt;
+  try { await putShopping(sh); logAct(`${t.done ? '샀어요' : '산 것 취소'} · ${t.name} ${won((t.price || 0) * (t.qty || 1))}`); } catch (e) { saveFail(); }
 }
 
 function viewSoon(item) {
@@ -1445,7 +1629,7 @@ const routeId = () => (MENU.some(x => x.id !== 'chat' && x.id === location.hash.
 function renderView(id) {
   const item = MENU.find(x => x.id === id);
   return id === 'today' ? viewToday() : id === 'archive' ? viewArchive() : id === 'money' ? viewMoney()
-    : id === 'fixed' ? viewFixed() : viewSoon(item);
+    : id === 'fixed' ? viewFixed() : id === 'items' ? viewItems() : id === 'shopping' ? viewShopping() : viewSoon(item);
 }
 
 // mode: enter(등장 애니메이션) | update(제자리 갱신) | route(화면 전환)
@@ -1916,6 +2100,15 @@ $view.addEventListener('click', e => {
   const addEx = e.target.closest('[data-add-expense]');
   if (addEx) { expenseSheet(addEx.dataset.addExpense || TODAY.slice(0, 7), null); return; }
   if (e.target.closest('[data-bal-all]')) { balanceAllSheet(); return; }
+  if (e.target.closest('[data-item-add]')) { itemSheet(null); return; }
+  const itc = e.target.closest('[data-item]');
+  if (itc) { if (suppressClick) { suppressClick = false; return; } itemSheet(itc.dataset.item); return; }
+  if (e.target.closest('[data-shop-add]')) { shopSheet(null); return; }
+  if (e.target.closest('[data-go-items]')) { location.hash = '#items'; return; }
+  const sc = e.target.closest('[data-shop-check]');
+  if (sc) { toggleShop(sc.dataset.shopCheck, sc); return; }
+  const sp = e.target.closest('[data-shop]');
+  if (sp) { shopSheet(sp.dataset.shop); return; }
   const trf = e.target.closest('[data-transfer]');
   if (trf) { transferSheet(trf.dataset.transfer || null); return; }
   const trr = e.target.closest('[data-tr]');
@@ -1934,17 +2127,20 @@ $view.addEventListener('click', e => {
   const bk = e.target.closest('[data-backup]');
   if (bk) { backup(bk); return; }
 });
-let cardDrag = null;
+let cardDrag = null, dragFrom = null, suppressClick = false;
 $view.addEventListener('pointerdown', e => {
   const c = e.target.closest('[data-card3d]');
   if (!c) return;
   cardDrag = c;
+  dragFrom = [e.clientX, e.clientY];
+  suppressClick = false;
   c.classList.add('held');
   c.setPointerCapture?.(e.pointerId);
 });
 $view.addEventListener('pointermove', e => {
   const c = cardDrag || (e.pointerType === 'mouse' ? e.target.closest('[data-card3d]') : null);
   if (!c) return;
+  if (cardDrag && dragFrom && Math.hypot(e.clientX - dragFrom[0], e.clientY - dragFrom[1]) > 8) suppressClick = true;
   const r = c.getBoundingClientRect();
   const px = Math.max(-0.5, Math.min(0.5, (e.clientX - r.left) / r.width - 0.5));
   const py = Math.max(-0.5, Math.min(0.5, (e.clientY - r.top) / r.height - 0.5));
@@ -1992,6 +2188,7 @@ function instructions() {
 - 사용자가 말하지 않은 내용을 지어내지 마. 날짜나 양이 애매하면 넣기 전에 물어봐.
 - '오늘', '내일', '토요일' 같은 말은 아래 날짜를 기준으로 YYYY-MM-DD로 바꿔.
 - 내 통장끼리 돈을 옮겼다고 하면 transfer로 기록해(소비가 아님).
+- 사야 할 것은 add_shopping, 자주 쓰는 물건과 가격은 add_item으로 넣어.
 - 돈을 썼다고 하면 add_expense로 날짜·금액·내용을 기록해. 카드로 긁었으면 method '나라사랑카드'. 통장을 말하면 bank에 넣어.
 - 시간이 걸리는 할 일은 minutes(분)에, 개수 같은 양은 amount에 넣어. 사이트 개발은 kind "dev", 운동은 kind "workout", 감사한 점 3개는 kind "thanks".
 - 감사한 점은 그날 자정 전까지만 적을 수 있고, 지나면 탈락이야.
@@ -2231,6 +2428,34 @@ function makeTools(before, acts) {
       },
     },
     {
+      name: 'add_shopping',
+      description: 'Adds something the user needs to buy to the 필요한 물건 list: name, option (color/size), price in won, qty, group (예: 옷, 생활용품).',
+      inputSchema: { type: 'object', properties: { name: { type: 'string' }, option: { type: 'string' }, price: { type: 'number' }, qty: { type: 'number' }, group: { type: 'string' } }, required: ['name'] },
+      execute: async input => {
+        keep('shopping/main', S.shopping);
+        const sh = clone(S.shopping);
+        const v = { id: newId(), name: String(input.name).slice(0, 60), option: String(input.option || '').slice(0, 40), price: Math.max(0, Math.round(Number(input.price) || 0)), qty: Math.max(1, Math.round(Number(input.qty) || 1)), group: String(input.group || '').slice(0, 20), done: false, at: new Date().toISOString() };
+        sh.list = [...(sh.list || []), v];
+        await putShopping(sh);
+        acts.push(`살 것 추가: ${v.name}`);
+        return { ok: true, id: v.id };
+      },
+    },
+    {
+      name: 'add_item',
+      description: 'Adds an everyday item the user regularly uses to 내 물건 with its price in won (e.g. 바디워시 7900).',
+      inputSchema: { type: 'object', properties: { name: { type: 'string' }, sub: { type: 'string', description: '제품명·용량' }, price: { type: 'number' } }, required: ['name'] },
+      execute: async input => {
+        keep('items/main', S.items);
+        const it = clone(S.items);
+        const v = { id: newId(), name: String(input.name).slice(0, 30), sub: String(input.sub || '').slice(0, 40), price: Math.max(0, Math.round(Number(input.price) || 0)), at: new Date().toISOString() };
+        it.list = [...(it.list || []), v];
+        await putItems(it);
+        acts.push(`내 물건 추가: ${v.name}`);
+        return { ok: true };
+      },
+    },
+    {
       name: 'add_income',
       description: 'Records money that came in (salary, transfer in): date (YYYY-MM-DD), amount in won, title, optional bank.',
       inputSchema: { type: 'object', properties: {
@@ -2296,6 +2521,8 @@ async function undoTurn(at) {
       else if (col === 'money') await putMoney(val);
       else if (col === 'spend') await putSpend(id, val || []);
       else if (col === 'transfers') await putTransfers(id, val || []);
+      else if (col === 'shopping') await putShopping(val || { list: [] });
+      else if (col === 'items') await putItems(val || { list: [] });
     }
     delete UI.undo[at];
     logAct('매니저가 한 일을 되돌림');
