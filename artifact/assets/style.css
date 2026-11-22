@@ -1072,3 +1072,43 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   .menu nav a, .menu-top, .marquee { opacity: 1; transform: none; }
   .menu:not(.open) { visibility: hidden; }
 }
+
+/* ---------- 이번 달 관리 · 고정 지출 ---------- */
+.t-big.bad, .plan-line .bad { color: var(--t-red); }
+.plan-list { display: grid; margin-top: 14px; border-top: 1px solid #2a2a33; padding-top: 6px; }
+.plan-line {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  padding: 7px 0; font-size: 15px; color: var(--t-sub); text-align: left; width: 100%;
+}
+.plan-line b { color: var(--t-text); font-weight: 700; white-space: nowrap; }
+.plan-line small { font-size: 12px; opacity: .85; margin-left: 4px; }
+.plan-line.head { color: var(--t-text); font-weight: 700; padding-top: 12px; }
+.plan-line.head .in { color: var(--t-blue-text); }
+.plan-line.sub { padding-left: 14px; font-size: 14px; }
+.plan-line.sub b { font-weight: 600; color: var(--t-sub); }
+.plan-line.link span { display: inline-flex; align-items: center; gap: 2px; }
+.plan-line.link svg { width: 15px; height: 15px; color: var(--t-sub); }
+.plan-line.fx .emoji { font-size: 14px; margin-right: 2px; }
+.plan-line.fx.done span, .plan-line.fx.done b { opacity: .6; }
+.plan-line.fx.plan b { color: var(--t-text); }
+.plan-line.add span { color: var(--t-blue-text); font-weight: 700; font-size: 14px; }
+.plan-line.sumline { border-top: 1px solid #2a2a33; margin-top: 6px; }
+button.plan-line:active { opacity: .7; }
+.fx-row .amt-col { display: grid; justify-items: end; gap: 2px; }
+.fx-state { font-size: 12px; font-weight: 700; color: var(--t-sub); }
+.fx-row.plan .fx-state { color: var(--t-blue-text); }
+.fx-row.done .amt { color: var(--t-sub); }
+.card-bal { width: 100%; text-align: left; margin: 2px 0 4px; padding: 10px 12px; border-radius: 14px; background: var(--t-card-2); }
+.card-bal:active { transform: scale(.98); }
+.acct-note { margin: 10px 0 0; }
+.apply-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 2px; font-size: 15px; font-weight: 600; color: var(--t-text); text-align: left; }
+.apply-row .shop-check { flex: none; }
+.apply-row[aria-pressed="true"] .shop-check { background: var(--t-blue); border-color: var(--t-blue); color: #fff; }
+
+/* 내 물건: 가진 개수 · 사고 싶은 것: 사진 카드 */
+.item-card .have { margin-top: 6px; padding: 3px 10px; border-radius: 99px; font-size: 13px; font-weight: 700; color: var(--t-blue-text); background: rgba(49, 130, 246, .14); }
+.item-card .price .per { font-size: 12px; font-weight: 600; color: var(--t-sub); margin-left: 1px; }
+.shop-grid { margin: 4px 0 8px; }
+.shop-card { position: relative; background: var(--t-card-2); }
+.shop-card .shop-check { position: absolute; top: 10px; right: 10px; background: rgba(0, 0, 0, .35); }
+.shop-card .price { font-size: 16px; }

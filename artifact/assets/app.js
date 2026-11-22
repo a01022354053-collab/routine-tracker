@@ -14,13 +14,19 @@ const BANKS = [
   { id: 'nh', name: '농협', short: '농', color: '#01a54e', logo: 'private/bank-nh.png' },
   { id: 'kakao', name: '카카오뱅크', short: '카', color: '#ffe300', logo: 'private/bank-kakao.png' },
   { id: 'shinhan', name: '신한', short: '신', color: '#0046ff', logo: 'private/bank-shinhan.png' },
+  { id: 'toss', name: '토스', short: '토', color: '#ffffff', logo: 'private/bank-toss.png' },
 ];
 // 은행 아이콘: 로고 사진을 동그랗게 (사진이 없으면 첫 글자)
 const bankLogo = b => (b.logo ? `<img src="${b.logo}" alt="" draggable="false">` : b.short);
-const DEFAULT_MONEY = { payday: 10, savings: 550000, spend: 650000, balances: { nh: null, kakao: null, shinhan: null } };
-// 통장마다 하는 일: 농협은 월급, 신한은 나라사랑카드, 카카오뱅크는 따로 모으는 돈. 쓸 수 있는 돈 = 농협 + 신한
-const ACCT_ROLE = { nh: '월급 통장', shinhan: '나라사랑 통장 · 카드', kakao: '따로 모으는 돈' };
-const USABLE = ['nh', 'shinhan'];
+// salary: 예상 월급(이번 달 월급이 아직 안 들어왔을 때 이번 달 관리에 쓴다). 없으면 적금 + 쓸 돈
+const DEFAULT_MONEY = { payday: 10, savings: 550000, spend: 650000, balances: { nh: null, kakao: null, shinhan: null, toss: null } };
+// 통장마다 하는 일: 농협은 월급, 신한은 나라사랑카드(체크카드라 신한 통장과 같은 돈), 카카오뱅크는 따로 모으는 돈, 토스는 아직 안 정함
+const ACCT_ROLE = { nh: '월급 통장', shinhan: '나라사랑 통장 · 카드', kakao: '따로 모으는 돈', toss: '' };
+// 통장 묶음: use 쓸 수 있는 돈 · save 따로 모으는 돈 · '' 그 밖의 통장(아직 안 정함). 통장 화면에서 바꾸면 money/main의 groups에 남는다
+const ACCT_GROUP = { nh: 'use', shinhan: 'use', kakao: 'save', toss: '' };
+const GROUP_NAME = { use: '쓸 수 있는 돈', save: '따로 모으는 돈', '': '그 밖의 통장' };
+const groupOf = id => S.money.groups?.[id] ?? ACCT_GROUP[id] ?? '';
+const banksIn = g => BANKS.filter(b => groupOf(b.id) === g);
 // 군적금(장병내일준비적금): 매달 월급날에 자동 입금, 만기 때 넣은 돈만큼 정부가 더 준다(100% 매칭, 이자 별도)
 const DEFAULT_SAVINGS = { payday: 10, lastMonth: null, match: 1, accounts: [] };
 const DEFAULT_STOCKS = { holdings: [] };
@@ -32,7 +38,7 @@ const MENU = [
   { id: 'money', emoji: '💰', name: '돈 관리' },
   { id: 'fixed', emoji: '🧾', name: '고정 지출' },
   { id: 'items', emoji: '🎒', name: '내 물건' },
-  { id: 'shopping', emoji: '🛒', name: '필요한 물건' },
+  { id: 'shopping', emoji: '🛒', name: '사고 싶은 것' },
 ];
 
 /* ---------- 작은 도구 ---------- */
@@ -70,7 +76,8 @@ const S = {
   savings: clone(DEFAULT_SAVINGS),   // 군적금
   transfers: {},  // 'YYYY-MM' → 통장끼리 옮긴 기록
   items: { list: [] },     // 내 물건(자주 쓰는 것)
-  shopping: { list: [] },  // 필요한 물건(살 것)
+  shopping: { list: [] },  // 사고 싶은 것
+  fixed: { list: [] },     // 고정 지출(군적금은 savings에서 저절로, 나머지는 여기)
   stocks: clone(DEFAULT_STOCKS),     // 주식
 };
 const UI = {
@@ -238,6 +245,11 @@ async function putShopping(v) {
   S.shopping = clone(v); refresh();
   return queue('shopping/main', () => DB.doc('shopping/main').set(v));
 }
+async function putFixed(v) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.fixed = clone(v); refresh();
+  return queue('fixed/main', () => DB.doc('fixed/main').set(v));
+}
 const itemsOf = () => (S.items.list || []).filter(x => !x.removed);
 const shopOf = () => (S.shopping.list || []).filter(x => !x.removed);
 
@@ -356,6 +368,51 @@ async function setBalance(bankId, amount) {
   logAct(`${b.name} 잔액 ${amount == null ? '지움' : won(amount)}`);
 }
 
+// 체크카드·계좌로 쓴 돈(또는 들어온 돈)을 그 통장 잔액에도 반영한다. 나라사랑카드는 신한 통장 돈이라 신한 잔액이 같이 줄어든다.
+// 반영한 만큼은 기록의 applied에 남겨 두고, 숨기거나 고칠 때 되돌린다(잔액을 모르는 통장은 건드리지 않음)
+async function applyToBalance(bankId, delta) {
+  if (!bankId || bankId === 'cash' || !delta || !BANKS.some(b => b.id === bankId)) return null;
+  const cur = S.money.balances[bankId];
+  if (cur == null) return null;
+  await setBalance(bankId, Number(cur) + delta);
+  return { bank: bankId, delta };
+}
+const revertApplied = x => (x?.applied ? applyToBalance(x.applied.bank, -x.applied.delta) : null);
+
+/* ---------- 고정 지출 · 이번 달 관리 ---------- */
+// 고정 지출 = 군적금(적금 설정에서 저절로) + 직접 넣은 것(통신비 같은). 이번 달 관리는 들어온 돈에서 이걸 빼서 쓸 수 있는 돈을 정한다
+const FIXED_EMOJI = ['📱', '🎵', '🛡️', '🚌', '💡', '📦'];
+function fixedRows() {
+  const sv = savPlan(), pd = S.savings.payday || S.money.payday || 10, rows = [];
+  if (sv.accts.length) sv.accts.forEach(a => rows.push({ id: `sav:${a.id}`, name: `군적금 ${a.short}`, emoji: '🏦', amount: a.monthly || 0, day: pd, bank: '', savings: true }));
+  else if (S.money.savings) rows.push({ id: 'sav:', name: '적금', emoji: '🏦', amount: S.money.savings, day: S.money.payday || 10, bank: '', savings: true });
+  (S.fixed.list || []).filter(x => !x.removed).forEach(x => rows.push({ ...x, amount: Number(x.amount) || 0 }));
+  return rows.sort((a, b) => (a.day || 0) - (b.day || 0));
+}
+const isSalary = x => x.type === 'in' && /월급|급여|봉급/.test(x.title || '');
+const expectedSalary = () => S.money.salary ?? ((S.money.savings || 0) + (S.money.spend || 0));
+// 그 달의 관리 목록: 들어온 돈(월급이 아직이면 예상 월급) − 고정 지출 = 쓸 수 있는 돈, 거기서 쓴 돈을 빼면 남은 돈
+function monthPlan(mk) {
+  const items = spendOf(mk);
+  const sal = items.filter(isSalary), salIn = sal.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const others = items.filter(x => x.type === 'in' && !isSalary(x)), otherIn = others.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const salary = salIn || expectedSalary();
+  const income = salary + otherIn;
+  const fixed = fixedRows(), fixedSum = fixed.reduce((s, x) => s + x.amount, 0);
+  const usable = income - fixedSum, spent = spentIn(mk), left = usable - spent;
+  const cur = TODAY.slice(0, 7), today = parseKey(TODAY).getDate();
+  const [y, m] = mk.split('-').map(Number), dim = new Date(y, m, 0).getDate();
+  const daysLeft = mk === cur ? dim - today + 1 : 0;
+  // 고정 지출이 이번 달에 나갔는지: 지난 달은 다 나감, 이번 달은 날짜가 지났으면(적금은 자동 입금 기록이 있으면) 나감
+  const status = x => {
+    if (mk < cur) return 'done';
+    if (mk > cur) return 'plan';
+    if (x.savings) return (S.savings.accounts || []).some(a => (a.deposits || []).some(d => d.month === mk)) || today >= x.day ? 'done' : 'plan';
+    return today >= (x.day || 1) ? 'done' : 'plan';
+  };
+  return { salary, salaryIn: salIn, salDate: sal[0]?.date, otherIn, others, income, fixed: fixed.map(x => ({ ...x, status: status(x) })), fixedSum, usable, spent, left, daysLeft, perDay: daysLeft ? Math.floor(Math.max(0, left) / daysLeft) : 0 };
+}
+
 async function connect() {
   const c = window.claude;
   const [db, sample] = await Promise.all([
@@ -450,6 +507,12 @@ async function connect() {
     const v = { list: [], ...(d.data() || {}) };
     if (same(v, S.shopping)) return;
     S.shopping = v;
+    refresh();
+  }, () => {});
+  DB.doc('fixed/main').onSnapshot(d => {
+    const v = { list: [], ...(d.data() || {}) };
+    if (same(v, S.fixed)) return;
+    S.fixed = v;
     refresh();
   }, () => {});
   DB.collection('transfers').onSnapshot(snap => {
@@ -848,13 +911,15 @@ function jarSVG(pct, id, color) {
 function viewMoney() {
   const M = S.money, p = payInfo();
   const bal = id => (M.balances[id] == null ? null : Number(M.balances[id]));
-  const usable = USABLE.reduce((s, id) => s + (bal(id) || 0), 0), usableKnown = USABLE.some(id => bal(id) != null);
-  const saveCash = bal('kakao');
+  const sumOf = g => banksIn(g).reduce((s, b) => s + (bal(b.id) || 0), 0), knownIn = g => banksIn(g).some(b => bal(b.id) != null);
+  const namesIn = g => banksIn(g).map(b => b.name).join(' + ');
+  const usable = sumOf('use'), usableKnown = knownIn('use');
   const sv = savPlan(), st = stockSum();
-  const total = usable + (saveCash || 0) + sv.bal + (st.value || 0);
+  const total = BANKS.reduce((s, b) => s + (bal(b.id) || 0), 0) + sv.bal + (st.value || 0);
   const mk = monthKey(UI.my, UI.mm), isNow = mk === TODAY.slice(0, 7);
   const items = spendOf(mk), out = items.filter(x => x.type !== 'in');
-  const spent = spentIn(mk), income = incomeIn(mk), budget = M.spend || 0;
+  const plan = monthPlan(mk);
+  const spent = spentIn(mk), income = incomeIn(mk), budget = Math.max(0, plan.usable);
   const left = budget - spent, pct = budget ? Math.min(100, Math.round((spent / budget) * 100)) : 0;
 
   // 지난달 같은 기간과 비교 (지난 달을 보고 있으면 그 전 달 전체와)
@@ -887,7 +952,7 @@ function viewMoney() {
     return `<div class="t-row acct" style="--b:${b.color}">
       <button class="acct-main" data-acct="${b.id}">
         <span class="ico bank">${bankLogo(b)}</span>
-        <span class="txt"><small>${b.name} · ${ACCT_ROLE[b.id]}</small><b class="num">${v == null ? '잔액을 넣어 주세요' : won(v)}</b></span>
+        <span class="txt"><small>${b.name}${ACCT_ROLE[b.id] ? ` · ${ACCT_ROLE[b.id]}` : ''}</small><b class="num">${v == null ? '잔액을 넣어 주세요' : won(v)}</b></span>
       </button>
       <button class="t-send" data-transfer="${b.id}">이체</button>
     </div>`;
@@ -901,8 +966,7 @@ function viewMoney() {
         <section class="t-card anim" style="--i:1">
           <span class="t-label">내 자산</span>
           <div class="t-big num"${wonAttr(total)}</div>
-          <div class="t-kv"><span>쓸 수 있는 돈 <small>농협 + 신한</small></span><b class="num">${usableKnown ? won(usable) : '–'}</b></div>
-          <div class="t-kv"><span>따로 모으는 돈 <small>카카오뱅크</small></span><b class="num">${saveCash == null ? '–' : won(saveCash)}</b></div>
+          ${['use', 'save', ''].filter(g => banksIn(g).length).map(g => `<div class="t-kv"><span>${GROUP_NAME[g]} <small>${namesIn(g)}</small></span><b class="num">${knownIn(g) ? won(sumOf(g)) : '–'}</b></div>`).join('')}
           <div class="t-kv"><span>군적금</span><b class="num">${sv.accts.length ? won(sv.bal) : '–'}</b></div>
           <div class="t-kv"><span>주식</span><b class="num">${st.rows.length ? (st.value != null ? won(st.value) : '현재가 필요') : '–'}</b></div>
           <div class="t-btns three">
@@ -912,15 +976,35 @@ function viewMoney() {
           </div>
         </section>
 
-        <section class="t-card anim" style="--i:2">
-          <div class="t-head"><b>쓸 수 있는 돈</b><span class="num">${usableKnown ? won(usable) : ''}</span></div>
-          ${BANKS.filter(b => USABLE.includes(b.id)).map(acctRow).join('')}
-          <div class="t-head small"><b>따로 모으는 돈</b></div>
-          ${BANKS.filter(b => !USABLE.includes(b.id)).map(acctRow).join('')}
+        <section class="t-card anim plan-card" style="--i:2">
+          <div class="t-month">${monthNav(UI.my, UI.mm, 'money')}</div>
+          <div class="t-head"><b>${UI.mm + 1}월 관리</b><button class="t-mini" data-plan>예상 월급</button></div>
+          <span class="t-label">${isNow ? '이번 달 남은 돈' : `${UI.mm + 1}월에 남은 돈`}</span>
+          <div class="t-big num${plan.left < 0 ? ' bad' : ''}">${plan.left < 0 ? '-' : ''}${won(Math.abs(plan.left))}</div>
+          <div class="t-bar ${plan.left < 0 ? 'over' : ''}"><i style="width:${plan.usable > 0 ? Math.min(100, Math.round((plan.spent / plan.usable) * 100)) : 100}%"></i></div>
+          <p class="t-sub">${plan.left < 0 ? `쓸 수 있는 돈보다 <b class="num bad">${won(-plan.left)}</b> 더 썼어요` : isNow && plan.daysLeft ? `남은 ${plan.daysLeft}일 동안 하루 <b class="num">${won(plan.perDay)}</b>씩 쓸 수 있어요` : `쓸 수 있는 돈 ${won(plan.usable)} 중 ${won(plan.spent)} 썼어요`}</p>
+          <div class="plan-list">
+            <div class="plan-line head"><span>들어온 돈</span><b class="num in">+${won(plan.income)}</b></div>
+            <div class="plan-line sub"><span>월급 <small>${plan.salaryIn ? `${Number(plan.salDate.slice(8))}일 들어왔어요` : '예상'}</small></span><b class="num">${won(plan.salary)}</b></div>
+            ${plan.others.map(x => `<div class="plan-line sub"><span>${esc(x.title)} <small>${Number(x.date.slice(8))}일</small></span><b class="num">${won(x.amount)}</b></div>`).join('')}
+            <button class="plan-line head link" data-go-fixed><span>고정 지출 ${ICON.next}</span><b class="num">-${won(plan.fixedSum)}</b></button>
+            ${plan.fixed.map(x => `<button class="plan-line sub fx ${x.status}" data-fixed="${esc(x.id)}">
+              <span><span class="emoji" aria-hidden="true">${esc(x.emoji || '📦')}</span> ${esc(x.name)} <small>${x.status === 'done' ? `${x.day}일 나갔어요` : `${x.day}일 예정`}</small></span><b class="num">${won(x.amount)}</b></button>`).join('')}
+            <button class="plan-line sub add" data-fixed-add><span>+ 고정 지출 추가</span></button>
+            <div class="plan-line head sumline"><span>쓸 수 있는 돈</span><b class="num">${won(plan.usable)}</b></div>
+            <div class="plan-line sub"><span>쓴 돈</span><b class="num">${plan.spent ? '-' : ''}${won(plan.spent)}</b></div>
+            <div class="plan-line head sumline"><span>남은 돈</span><b class="num ${plan.left < 0 ? 'bad' : ''}">${plan.left < 0 ? '-' : ''}${won(Math.abs(plan.left))}</b></div>
+          </div>
+        </section>
+
+        <section class="t-card anim" style="--i:3">
+          ${['use', 'save', ''].filter(g => banksIn(g).length).map((g, i) => `
+            <div class="t-head${i ? ' small' : ''}"><b>${GROUP_NAME[g]}</b><span class="num">${knownIn(g) ? won(sumOf(g)) : ''}</span></div>
+            ${banksIn(g).map(acctRow).join('')}`).join('')}
           ${UI.imgOK ? `<button class="t-row link" data-capture><span class="ico"><span class="emoji" aria-hidden="true">📷</span></span><span class="txt"><b>은행 앱 캡처로 넣기</b><small>사진을 보내면 매니저가 읽어 넣어요</small></span>${ICON.next}</button>` : ''}
         </section>
 
-        <section class="t-card anim piggy" style="--i:3">
+        <section class="t-card anim piggy" style="--i:4">
           <div class="t-head"><b>군적금 저금통</b><button class="t-mini" data-savings>설정</button></div>
           ${sv.accts.length ? `
             <span class="t-label">지금 모인 돈</span>
@@ -940,7 +1024,7 @@ function viewMoney() {
           : '<p class="t-empty">아직 적금을 넣지 않았어요</p><button class="t-btn primary" data-savings>적금 넣기</button>'}
         </section>
 
-        <section class="t-card anim" style="--i:4">
+        <section class="t-card anim" style="--i:5">
           <div class="t-head"><b>주식</b><button class="t-mini" data-stock>${st.rows.length ? '고치기' : '종목 추가'}</button></div>
           ${st.rows.length ? `
             <span class="t-label">평가 금액</span>
@@ -976,6 +1060,7 @@ function viewMoney() {
       <div class="money-col">
         <section class="t-card anim nara" style="--i:5">
           <div class="t-head"><b>나라사랑카드</b><span>신한 체크</span></div>
+          <button class="t-kv card-bal" data-acct="shinhan"><span>쓸 수 있는 잔액 <small>신한 통장과 같은 돈</small></span><b class="num">${bal('shinhan') == null ? '잔액을 넣어 주세요' : won(bal('shinhan'))}</b></button>
           <div class="card3d" data-card3d>
             <div class="card3d-float"><div class="card3d-in">
               <img src="${CARD_IMG}" alt="신한 나라사랑카드" draggable="false">
@@ -998,8 +1083,8 @@ function viewMoney() {
           <div class="t-big num">${p.left === 0 ? '오늘이에요' : `${p.left}일`}</div>
           <span class="t-sub num">${p.next.getMonth() + 1}월 ${p.next.getDate()}일 ${DAY[p.next.getDay()]}요일 · 매달 ${M.payday}일</span>
           <div class="t-bar"><i style="width:${p.pct}%"></i></div>
-          <div class="t-kv"><span>군적금 자동이체</span><b class="num">${won(M.savings)}</b></div>
-          <div class="t-kv"><span>한 달 쓸 수 있는 돈</span><b class="num">${won(M.spend)}</b></div>
+          <div class="t-kv"><span>고정 지출 <small>군적금 포함</small></span><b class="num">${won(plan.fixedSum)}</b></div>
+          <div class="t-kv"><span>${UI.mm + 1}월 쓸 수 있는 돈</span><b class="num">${won(plan.usable)}</b></div>
         </section>
 
         <section class="t-card anim" style="--i:7">
@@ -1008,7 +1093,7 @@ function viewMoney() {
           <div class="t-big num"${wonAttr(spent)}</div>
           ${compare ? `<p class="t-say">${compare}</p>` : ''}
           ${budget ? `<div class="t-bar ${left < 0 ? 'over' : ''}"><i style="width:${pct}%"></i></div>
-            <p class="t-sub">${left >= 0 ? `예산 ${manwon(budget)} 중 <b class="num">${won(left)}</b> 남았어요` : `예산 ${manwon(budget)}을 <b class="num bad">${won(-left)}</b> 넘었어요`}</p>` : ''}
+            <p class="t-sub">${left >= 0 ? `쓸 수 있는 돈 ${won(budget)} 중 <b class="num">${won(left)}</b> 남았어요` : `쓸 수 있는 돈 ${won(budget)}을 <b class="num bad">${won(-left)}</b> 넘었어요`}</p>` : ''}
           ${out.length ? catsHTML(catsOf(out), spent) : ''}
           ${income ? `<div class="t-kv"><span>${UI.mm + 1}월 들어온 돈</span><b class="num in">+${won(income)}</b></div>` : ''}
         </section>
@@ -1246,7 +1331,17 @@ function accountSheet(bankId) {
     <div class="t-btns three"><button class="t-btn primary" id="acMove">이체</button><button class="t-btn" id="acEdit">잔액 고치기</button><button class="t-btn" id="acAdd">내역 추가</button></div>
     ${mine.length ? `<div class="t-head small"><b>${UI.mm + 1}월 이 통장 내역</b><span class="num">${mine.length}</span></div>${mine.map(x => txRowHTML(mk, x)).join('')}` : ''}
     ${moves.length ? `<div class="t-head small"><b>${UI.mm + 1}월 이체</b><span class="num">${moves.length}</span></div>${moves.map(x => trRowHTML(mk, x, bankId)).join('')}` : ''}
+    <div class="t-head small"><b>이 통장 돈은</b></div>
+    <div class="parts" id="acGroup">${['use', 'save', ''].map(g => `<button class="pchip" data-g="${g}" aria-pressed="${groupOf(bankId) === g}">${GROUP_NAME[g]}</button>`).join('')}</div>
+    ${bankId === 'shinhan' ? '<p class="t-sub acct-note">나라사랑카드로 쓴 돈은 이 통장 잔액에서 바로 빠져요</p>' : ''}
     ${balHistHTML(bankId)}`, body => {
+    body.querySelector('#acGroup').addEventListener('click', async e => {
+      const g = e.target.closest('[data-g]'); if (!g || g.dataset.g === groupOf(bankId)) return;
+      const money = clone(S.money);
+      money.groups = { ...(money.groups || {}), [bankId]: g.dataset.g };
+      body.querySelectorAll('#acGroup [data-g]').forEach(x => x.setAttribute('aria-pressed', x.dataset.g === g.dataset.g));
+      try { await putMoney(money); logAct(`${b.name} 통장 → ${GROUP_NAME[g.dataset.g]}`); toast(`${GROUP_NAME[g.dataset.g]}(으)로 옮겼어요`); } catch (err) { saveFail(); }
+    });
     body.querySelector('#acEdit').addEventListener('click', () => balanceSheet(bankId));
     body.querySelector('#acMove').addEventListener('click', () => transferSheet(bankId));
     body.querySelector('#acAdd').addEventListener('click', () => expenseSheet(TODAY.slice(0, 7), null, bankId));
@@ -1288,8 +1383,9 @@ function balanceAllSheet() {
 function expenseSheet(mk, id, presetBank, presetMethod) {
   const cur = id ? (S.spend[mk]?.items || []).find(x => x.id === id) : null;
   const banks = [...BANKS.map(b => ({ id: b.id, name: b.name })), { id: 'cash', name: '현금' }];
-  const f = { type: cur?.type === 'in' ? 'in' : 'out', bank: cur?.bank || presetBank || '', cat: cur?.cat || '', method: cur?.method || presetMethod || '' };
+  const f = { type: cur?.type === 'in' ? 'in' : 'out', bank: cur?.bank || presetBank || '', cat: cur?.cat || '', method: cur?.method || presetMethod || '', apply: cur ? !!cur.applied : true };
   if (f.method === 'card') f.bank = 'shinhan';
+  const realBank = () => !!f.bank && f.bank !== 'cash';
   const defDate = cur?.date || (mk === TODAY.slice(0, 7) ? TODAY : `${mk}-01`);
   openSheet(`<div class="sh-head" style="--c:var(--lime)"><span class="q-icon"><span class="emoji" aria-hidden="true" id="exIcon">${f.type === 'in' ? '💵' : '💸'}</span></span>
       <div><h3>${cur ? '내역 고치기' : '내역 기록'}</h3><p>${cur ? `${dotDate(cur.date)} 기록` : '기록해 두면 달마다 모여요'}</p></div></div>
@@ -1302,10 +1398,18 @@ function expenseSheet(mk, id, presetBank, presetMethod) {
     <div class="sh-sec" id="exMethodBox" ${f.type === 'in' ? 'hidden' : ''}><span class="label">결제</span><div class="parts" id="exMethod">${[['card', '💳 나라사랑카드'], ['transfer', '계좌'], ['cash', '현금']].map(([m, n]) =>
       `<button class="pchip" data-m="${m}" aria-pressed="${m === f.method}">${n}</button>`).join('')}</div></div>
     <div class="sh-sec"><span class="label">통장</span><div class="parts" id="exBank">${banks.map(b => `<button class="pchip" data-b="${b.id}" aria-pressed="${b.id === f.bank}">${b.name}</button>`).join('')}</div></div>
+    <button class="apply-row" id="exApply" aria-pressed="${f.apply}" ${realBank() ? '' : 'hidden'}><span class="shop-check" aria-hidden="true">${ICON.check}</span><span id="exApplyTxt"></span></button>
     <div class="${cur ? 'btn-row' : ''}">${cur ? '<button class="btn ghost" id="exDel">기록에서 숨기기</button>' : ''}<button class="btn" id="exSave">저장</button></div>`, body => {
     const $ = q => body.querySelector(q);
     const press = (box, attr, val) => box.querySelectorAll(`[${attr}]`).forEach(x => x.setAttribute('aria-pressed', x.getAttribute(attr) === val));
     const amt = $('#exAmt');
+    const applyUI = () => {
+      $('#exApply').hidden = !realBank();
+      $('#exApply').setAttribute('aria-pressed', f.apply);
+      $('#exApplyTxt').textContent = `${bankName(f.bank)} 잔액${f.type === 'in' ? '에 더하기' : '에서 빼기'}${S.money.balances[f.bank] == null ? ' (잔액을 넣으면 반영돼요)' : ''}`;
+    };
+    applyUI();
+    $('#exApply').addEventListener('click', () => { f.apply = !f.apply; applyUI(); });
     amt.addEventListener('input', () => { amt.value = amt.value.replace(/[^\d]/g, ''); });
     $('#exType').addEventListener('click', e => {
       const b = e.target.closest('[data-t]'); if (!b) return;
@@ -1313,19 +1417,26 @@ function expenseSheet(mk, id, presetBank, presetMethod) {
       $('#exCatBox').hidden = f.type === 'in';
       $('#exMethodBox').hidden = f.type === 'in';
       $('#exIcon').textContent = f.type === 'in' ? '💵' : '💸';
+      applyUI();
     });
     $('#exCat').addEventListener('click', e => { const b = e.target.closest('[data-c]'); if (!b) return; f.cat = f.cat === b.dataset.c ? '' : b.dataset.c; press($('#exCat'), 'data-c', f.cat); });
-    $('#exBank').addEventListener('click', e => { const b = e.target.closest('[data-b]'); if (!b) return; f.bank = f.bank === b.dataset.b ? '' : b.dataset.b; press($('#exBank'), 'data-b', f.bank); });
+    $('#exBank').addEventListener('click', e => { const b = e.target.closest('[data-b]'); if (!b) return; f.bank = f.bank === b.dataset.b ? '' : b.dataset.b; press($('#exBank'), 'data-b', f.bank); applyUI(); });
     $('#exMethod').addEventListener('click', e => {
       const b = e.target.closest('[data-m]'); if (!b) return;
       f.method = f.method === b.dataset.m ? '' : b.dataset.m; press($('#exMethod'), 'data-m', f.method);
       if (f.method === 'card') { f.bank = 'shinhan'; press($('#exBank'), 'data-b', 'shinhan'); }
       if (f.method === 'cash') { f.bank = 'cash'; press($('#exBank'), 'data-b', 'cash'); }
+      applyUI();
     });
     $('#exDel')?.addEventListener('click', async () => {
       const items = clone(S.spend[mk].items);
       Object.assign(items.find(x => x.id === id), { removed: true, removedAt: new Date().toISOString() });
-      try { await putSpend(mk, items); logAct(`내역 숨김 · ${cur.title} ${won(cur.amount)} (${dotDate(cur.date)})`); toast('기록에서 숨겼어요'); closeSheet(); } catch (e) { saveFail(); }
+      try {
+        await putSpend(mk, items);
+        const back = await revertApplied(cur);
+        logAct(`내역 숨김 · ${cur.title} ${won(cur.amount)} (${dotDate(cur.date)})`);
+        toast(back ? `기록에서 숨기고 ${bankName(back.bank)} 잔액을 되돌렸어요` : '기록에서 숨겼어요'); closeSheet();
+      } catch (e) { saveFail(); }
     });
     $('#exSave').addEventListener('click', async () => {
       const amount = Number(amt.value), title = $('#exTitle').value.trim() || (f.type === 'in' ? '입금' : '지출');
@@ -1340,24 +1451,29 @@ function expenseSheet(mk, id, presetBank, presetMethod) {
       };
       const sign = f.type === 'in' ? '+' : '-';
       try {
+        // 잔액 반영: 고칠 때는 예전에 반영한 만큼 먼저 되돌린다
+        if (cur?.applied) await revertApplied(cur);
+        const applied = f.apply && realBank() ? await applyToBalance(f.bank, f.type === 'in' ? amount : -amount) : null;
+        const mark = x => { if (applied) x.applied = applied; else delete x.applied; return x; };
         if (cur) {
           // 고치면 예전 값은 history에 남겨 둔다
           const items = clone(S.spend[mk].items), x = items.find(i => i.id === id);
           const prev = { amount: x.amount, title: x.title, date: x.date, bank: x.bank, cat: x.cat, type: x.type, at: x.editedAt || x.at };
           if (nk === mk) {
-            fill(x); x.editedAt = new Date().toISOString(); x.history = [...(x.history || []), prev];
+            mark(fill(x)); x.editedAt = new Date().toISOString(); x.history = [...(x.history || []), prev];
             await putSpend(mk, items);
           } else {
             Object.assign(x, { removed: true, removedAt: new Date().toISOString(), movedTo: nk });
+            delete x.applied;
             await putSpend(mk, items);
-            await putSpend(nk, [...clone(S.spend[nk]?.items || []), fill({ id: newId(), at: new Date().toISOString(), history: [prev] })]);
+            await putSpend(nk, [...clone(S.spend[nk]?.items || []), mark(fill({ id: newId(), at: new Date().toISOString(), history: [prev] }))]);
           }
           logAct(`내역 고침 · ${prev.title} ${won(prev.amount)} → ${title} ${sign}${won(amount)} (${dotDate(date)})`);
         } else {
-          await putSpend(nk, [...clone(S.spend[nk]?.items || []), fill({ id: newId(), at: new Date().toISOString() })]);
+          await putSpend(nk, [...clone(S.spend[nk]?.items || []), mark(fill({ id: newId(), at: new Date().toISOString() }))]);
           logAct(`${f.type === 'in' ? '입금' : '지출'} · ${dotDate(date)} ${title} ${sign}${won(amount)}${f.bank ? ` (${bankName(f.bank)})` : ''}`);
         }
-        toast('기록했어요');
+        toast(applied ? `기록했어요 · ${bankName(applied.bank)} 잔액 ${won(S.money.balances[applied.bank])}` : '기록했어요');
         closeSheet();
       } catch (e) { saveFail(); }
     });
@@ -1373,7 +1489,7 @@ async function backup(btn) {
   btn.textContent = '모으는 중…';
   try {
     const out = { app: '일상 매니저', exportedAt: new Date().toISOString() };
-    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'chatlog', 'log', 'chat', 'restored']) {
+    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'fixed', 'chatlog', 'log', 'chat', 'restored']) {
       const snap = await DB.collection(col).get();
       out[col] = Object.fromEntries(snap.docs.map(d => [d.id, d.data()]));
     }
@@ -1388,20 +1504,96 @@ async function backup(btn) {
 }
 
 function viewFixed() {
-  const M = S.money;
+  const plan = monthPlan(TODAY.slice(0, 7)), rows = plan.fixed;
+  const pct = plan.income ? Math.round((plan.fixedSum / plan.income) * 100) : 0;
   return `
     <div class="view-title anim" style="--i:0">${ICON.star}<h1>고정 지출</h1></div>
-    <section class="panel anim" style="--i:1">
-      <div class="sh-sec">
-        <div class="total"><span class="eyebrow">매달 나가는 돈</span><b class="num">${manwon(M.savings)}</b></div>
-        <div class="fixed-list">
-          <div class="plan-row"><span class="tile"><span class="emoji" aria-hidden="true">🏦</span></span><div><b>적금</b><small>매달 ${M.payday}일 자동이체</small></div><span class="amt num" style="color:var(--cyan)">${manwon(M.savings)}</span></div>
-        </div>
-      </div>
-    </section>`;
+    ${ready() ? '' : statusPanel(1)}
+    <div class="toss-view fixed-view">
+      <section class="t-card anim" style="--i:1">
+        <span class="t-label">매달 나가는 돈</span>
+        <div class="t-big num"${wonAttr(plan.fixedSum)}</div>
+        <span class="t-sub">${plan.salaryIn ? '이번 달 월급' : '예상 월급'} ${won(plan.salary)}의 ${pct}%</span>
+        <div class="t-bar"><i style="width:${Math.min(100, pct)}%"></i></div>
+        <div class="t-btns"><button class="t-btn primary" data-fixed-add>고정 지출 추가</button><button class="t-btn" data-plan>예상 월급</button></div>
+      </section>
+      <section class="t-card anim" style="--i:2">
+        <div class="t-head"><b>${NOW.getMonth() + 1}월</b><span class="num">${rows.filter(x => x.status === 'done').length}/${rows.length} 나갔어요</span></div>
+        ${rows.length ? rows.map(x => `<button class="t-row fx-row ${x.status}" data-fixed="${esc(x.id)}">
+            <span class="ico"><span class="emoji" aria-hidden="true">${esc(x.emoji || '📦')}</span></span>
+            <span class="txt"><b>${esc(x.name)}</b><small>매달 ${x.day}일${x.bank ? ` · ${bankName(x.bank)}` : ''}${x.savings ? ' · 자동 입금' : ''}</small></span>
+            <span class="amt-col"><span class="amt num">${won(x.amount)}</span><small class="fx-state">${x.status === 'done' ? '나갔어요' : '예정'}</small></span>
+          </button>`).join('') : '<p class="t-empty">아직 고정 지출이 없어요</p>'}
+      </section>
+    </div>`;
 }
 
-/* ---------- 내 물건 · 필요한 물건 ---------- */
+// 고정 지출 넣기/고치기. 군적금은 적금 설정에서 고친다
+function fixedSheet(id) {
+  if (String(id || '').startsWith('sav:')) { savingsSheet(); return; }
+  const x = id ? (S.fixed.list || []).find(i => i.id === id) : null;
+  const f = { emoji: x?.emoji || FIXED_EMOJI[0], bank: x?.bank || '' };
+  openSheet(`<div class="tr-head"><h3>${x ? '고정 지출 고치기' : '고정 지출 추가'}</h3><p>매달 나가는 돈은 이번 달 관리에 저절로 들어가요</p></div>
+    <div class="sh-sec"><span class="label">이름</span><input class="field" id="fxName" maxlength="20" placeholder="예: 통신비" value="${esc(x?.name || '')}"></div>
+    <div class="sav-grid">
+      <label>금액<span class="numfield"><input class="field" id="fxAmt" inputmode="numeric" placeholder="0" value="${x?.amount ?? ''}"><span>원</span></span></label>
+      <label>나가는 날<span class="numfield"><input class="field" id="fxDay" inputmode="numeric" placeholder="10" value="${x?.day ?? ''}"><span>일</span></span></label>
+    </div>
+    <div class="sh-sec"><span class="label">아이콘</span><div class="parts" id="fxEmoji">${FIXED_EMOJI.map(e => `<button class="pchip" data-e="${e}" aria-pressed="${e === f.emoji}"><span class="emoji">${e}</span></button>`).join('')}</div></div>
+    <div class="sh-sec"><span class="label">나가는 통장</span><div class="parts" id="fxBank">${BANKS.map(b => `<button class="pchip" data-b="${b.id}" aria-pressed="${b.id === f.bank}">${b.name}</button>`).join('')}</div></div>
+    <div class="${x ? 'btn-row' : ''}">${x ? '<button class="btn ghost" id="fxDel">목록에서 빼기</button>' : ''}<button class="btn" id="fxSave">${x ? '저장' : '넣기'}</button></div>`, body => {
+    const $ = q => body.querySelector(q);
+    ['#fxAmt', '#fxDay'].forEach(q => $(q).addEventListener('input', e => { e.target.value = e.target.value.replace(/[^\d]/g, ''); }));
+    const pick = (box, attr, key) => $(box).addEventListener('click', e => {
+      const b = e.target.closest(`[${attr}]`); if (!b) return;
+      f[key] = key === 'bank' && f.bank === b.getAttribute(attr) ? '' : b.getAttribute(attr);
+      body.querySelectorAll(`${box} [${attr}]`).forEach(c => c.setAttribute('aria-pressed', c.getAttribute(attr) === f[key]));
+    });
+    pick('#fxEmoji', 'data-e', 'emoji');
+    pick('#fxBank', 'data-b', 'bank');
+    $('#fxSave').addEventListener('click', async () => {
+      const v = { name: $('#fxName').value.trim(), amount: Number($('#fxAmt').value) || 0, day: Math.min(31, Math.max(1, Number($('#fxDay').value) || S.money.payday || 10)), emoji: f.emoji, bank: f.bank };
+      if (!v.name) { toast('이름을 넣어 주세요'); return; }
+      if (!(v.amount > 0)) { toast('금액을 넣어 주세요'); return; }
+      const fx = clone(S.fixed), now = new Date().toISOString();
+      if (x) {
+        const t = fx.list.find(i => i.id === id);
+        t.history = [...(t.history || []), { name: t.name, amount: t.amount, day: t.day, bank: t.bank, at: now }];
+        Object.assign(t, v);
+        logAct(`고정 지출 고침 · ${v.name} ${won(v.amount)} (매달 ${v.day}일)`);
+      } else {
+        fx.list = [...(fx.list || []), { id: newId(), ...v, at: now }];
+        logAct(`고정 지출 추가 · ${v.name} ${won(v.amount)} (매달 ${v.day}일)`);
+      }
+      try { await putFixed(fx); toast('저장했어요'); closeSheet(); } catch (e) { saveFail(); }
+    });
+    $('#fxDel')?.addEventListener('click', async () => {
+      const fx = clone(S.fixed);
+      Object.assign(fx.list.find(i => i.id === id), { removed: true, removedAt: new Date().toISOString() });
+      try { await putFixed(fx); logAct(`고정 지출 뺌 · ${x.name}`); toast('목록에서 뺐어요 (기록은 남아요)'); closeSheet(); } catch (e) { saveFail(); }
+    });
+  }, 'toss');
+}
+
+// 예상 월급: 이번 달 월급이 들어오기 전에는 이 금액으로 관리하고, '월급' 입금을 기록하면 그 금액으로 바뀐다
+function planSheet() {
+  const cur = expectedSalary();
+  openSheet(`<div class="tr-head"><h3>예상 월급</h3><p>월급이 들어와서 '월급'으로 기록하면 그 금액으로 저절로 바뀌어요</p></div>
+    <div class="sh-sec"><div class="numfield"><input class="field" id="plSal" inputmode="numeric" value="${cur}"><span>원</span></div></div>
+    <div class="sh-sec"><span class="label">월급날</span><div class="numfield"><input class="field" id="plDay" inputmode="numeric" value="${S.money.payday || 10}"><span>일</span></div></div>
+    <button class="btn" id="plSave">저장</button>`, body => {
+    const $ = q => body.querySelector(q);
+    ['#plSal', '#plDay'].forEach(q => $(q).addEventListener('input', e => { e.target.value = e.target.value.replace(/[^\d]/g, ''); }));
+    $('#plSave').addEventListener('click', async () => {
+      const sal = Number($('#plSal').value) || 0, day = Math.min(28, Math.max(1, Number($('#plDay').value) || 10));
+      const money = clone(S.money);
+      money.salary = sal; money.payday = day;
+      try { await putMoney(money); logAct(`예상 월급 ${won(sal)} · 월급날 ${day}일`); toast('저장했어요'); closeSheet(); } catch (e) { saveFail(); }
+    });
+  }, 'toss');
+}
+
+/* ---------- 내 물건 · 사고 싶은 것 ---------- */
 // 사진이 있는 물건은 나라사랑카드처럼 손가락을 따라 기우는 입체 카드로
 function prod3dHTML(x) {
   return `<div class="card3d prod" data-card3d><div class="card3d-float"><div class="card3d-in">
@@ -1418,14 +1610,15 @@ function viewItems() {
       <section class="t-card anim" style="--i:1">
         <span class="t-label">자주 쓰는 물건 ${list.length}개</span>
         <div class="t-big num">${list.length ? won(sum) : '아직 없어요'}</div>
-        <span class="t-sub">${list.length ? '하나씩 다 다시 사면 드는 돈이에요' : '쓰는 물건과 가격을 넣어 두면 떨어졌을 때 바로 살 것에 넣을 수 있어요'}</span>
+        <span class="t-sub">${list.length ? '하나씩 다 다시 사면 드는 돈이에요' : '쓰는 물건과 가격을 넣어 두면 떨어졌을 때 바로 사고 싶은 것에 넣을 수 있어요'}</span>
       </section>
       <div class="item-grid">
         ${list.map((x, i) => `<article class="t-card item-card anim" style="--i:${2 + i}" data-item="${esc(x.id)}">
           ${x.image ? prod3dHTML(x) : `<div class="item-noimg"><span class="emoji" aria-hidden="true">${esc(x.emoji || '📦')}</span></div>`}
           <b>${esc(x.name)}</b>
           ${x.sub ? `<small>${esc(x.sub)}</small>` : ''}
-          <span class="num price">${x.price ? won(x.price) : '가격 없음'}</span>
+          <span class="num price">${x.price ? `${won(x.price)}${x.unit && x.unit !== '개' ? `<small class="per">/${esc(x.unit)}</small>` : ''}` : '가격 없음'}</span>
+          ${x.qty != null ? `<span class="have num">${x.qty}${esc(x.unit || '개')} 있어요</span>` : ''}
         </article>`).join('')}
         <button class="item-add anim" style="--i:${2 + list.length}" data-item-add><span class="plus" aria-hidden="true">+</span><b>물건 추가</b></button>
       </div>
@@ -1436,31 +1629,41 @@ function viewShopping() {
   const list = shopOf();
   const todo = list.filter(x => !x.done), done = list.filter(x => x.done);
   const sum = arr => arr.reduce((s, x) => s + (Number(x.price) || 0) * (Number(x.qty) || 1), 0);
+  const priceOf = x => (x.price == null || x.price === '' ? '가격 미정' : won((Number(x.price) || 0) * (Number(x.qty) || 1)));
   const groups = {};
   todo.forEach(x => (groups[x.group || '기타'] = groups[x.group || '기타'] || []).push(x));
+  // 사진이 있는 것은 입체 카드로
+  const card = x => `<article class="t-card item-card shop-card" data-shop="${esc(x.id)}">
+      ${prod3dHTML(x)}
+      <b>${esc(x.name)}</b>
+      ${x.option ? `<small>${esc(x.option)}</small>` : ''}
+      <span class="num price">${priceOf(x)}</span>
+      <button class="shop-check" data-shop-check="${esc(x.id)}" aria-pressed="${!!x.done}" aria-label="${esc(x.name)} 샀어요">${ICON.check}</button>
+    </article>`;
   const row = x => `<div class="shop-row${x.done ? ' done' : ''}">
       <button class="shop-check" data-shop-check="${esc(x.id)}" aria-pressed="${!!x.done}" aria-label="${esc(x.name)} ${x.done ? '산 것 취소' : '샀어요'}">${ICON.check}</button>
       <button class="shop-main" data-shop="${esc(x.id)}">
         <b>${esc(x.name)}</b>
         <small>${[x.option, (x.qty || 1) > 1 ? `${x.qty}개` : '', x.done && x.doneAt ? `${dotDate(keyOf(new Date(x.doneAt)))} 삼` : ''].filter(Boolean).map(esc).join(' · ')}</small>
       </button>
-      <span class="num amt">${won((Number(x.price) || 0) * (Number(x.qty) || 1))}</span>
+      <span class="num amt">${priceOf(x)}</span>
     </div>`;
   return `
-    <div class="view-title anim" style="--i:0">${ICON.star}<h1>필요한 물건</h1></div>
+    <div class="view-title anim" style="--i:0">${ICON.star}<h1>사고 싶은 것</h1></div>
     ${ready() ? '' : statusPanel(1)}
     <div class="toss-view shop-view">
       <section class="t-card anim" style="--i:1">
-        <span class="t-label">살 것 ${todo.length}개</span>
-        <div class="t-big num">${won(sum(todo))}</div>
+        <span class="t-label">사고 싶은 것 ${todo.length}개</span>
+        <div class="t-big num">${won(sum(todo))}${todo.some(x => x.price == null || x.price === '') ? '<small class="t-sub"> + 가격 미정</small>' : ''}</div>
         ${done.length ? `<span class="t-sub num">이미 산 것 ${done.length}개 · ${won(sum(done))}</span>` : ''}
-        <div class="t-btns"><button class="t-btn primary" data-shop-add>살 것 추가</button><button class="t-btn" data-go-items>내 물건 보기</button></div>
+        <div class="t-btns"><button class="t-btn primary" data-shop-add>추가</button><button class="t-btn" data-go-items>내 물건 보기</button></div>
       </section>
       ${Object.entries(groups).map(([g, arr], i) => `<section class="t-card anim" style="--i:${2 + i}">
         <div class="t-head"><b>${esc(g)}</b><span class="num">${arr.length}</span><span class="t-mini num" style="color:var(--t-sub)">${won(sum(arr))}</span></div>
-        ${arr.map(row).join('')}
+        ${arr.some(x => x.image) ? `<div class="item-grid shop-grid">${arr.filter(x => x.image).map(card).join('')}</div>` : ''}
+        ${arr.filter(x => !x.image).map(row).join('')}
       </section>`).join('')}
-      ${!todo.length ? '<section class="t-card anim" style="--i:2"><p class="t-empty">살 것이 없어요</p></section>' : ''}
+      ${!todo.length ? '<section class="t-card anim" style="--i:2"><p class="t-empty">사고 싶은 게 없어요</p></section>' : ''}
       ${done.length ? `<section class="t-card anim" style="--i:6"><div class="t-head"><b>산 것</b><span class="num">${done.length}</span></div>${done.map(row).join('')}</section>` : ''}
     </div>`;
 }
@@ -1470,21 +1673,36 @@ function itemSheet(id) {
   openSheet(`${x?.image ? `<div class="item-hero">${prod3dHTML(x)}</div>` : `<div class="tr-head"><h3>${x ? esc(x.name) : '물건 추가'}</h3><p>자주 쓰는 물건과 가격</p></div>`}
     <div class="sh-sec"><span class="label">이름</span><input class="field" id="itName" maxlength="30" placeholder="예: 바디워시" value="${esc(x?.name || '')}"></div>
     <div class="sh-sec"><span class="label">제품</span><input class="field" id="itSub" maxlength="40" placeholder="예: 도브 리밸런싱 1000g" value="${esc(x?.sub || '')}"></div>
-    <div class="sh-sec"><span class="label">가격</span><div class="numfield"><input class="field" id="itPrice" inputmode="numeric" placeholder="0" value="${x?.price ?? ''}"><span>원</span></div></div>
-    ${x ? `<button class="btn" id="itOut">다 떨어졌어요 · 살 것에 넣기</button>
+    <div class="sav-grid">
+      <label>가격 <small>하나에</small><span class="numfield"><input class="field" id="itPrice" inputmode="numeric" placeholder="0" value="${x?.price ?? ''}"><span>원</span></span></label>
+      <label>가진 개수<span class="numfield"><input class="field" id="itQty" inputmode="numeric" placeholder="1" value="${x?.qty ?? ''}"><span id="itUnitTxt">${esc(x?.unit || '개')}</span></span></label>
+    </div>
+    <div class="sh-sec"><span class="label">세는 단위</span><div class="parts" id="itUnit">${['개', '통', '장', '병'].map(u => `<button class="pchip" data-u="${u}" aria-pressed="${u === (x?.unit || '개')}">${u}</button>`).join('')}</div></div>
+    ${x ? `<button class="btn" id="itOut">다 떨어졌어요 · 사고 싶은 것에 넣기</button>
       <div class="btn-row"><button class="btn ghost" id="itDel">목록에서 빼기</button><button class="btn ghost" id="itSave">저장</button></div>`
       : '<button class="btn" id="itSave">넣기</button>'}`, body => {
     const $ = q => body.querySelector(q);
-    $('#itPrice').addEventListener('input', e => { e.target.value = e.target.value.replace(/[^\d]/g, ''); });
-    const read = () => ({ name: $('#itName').value.trim(), sub: $('#itSub').value.trim(), price: Number($('#itPrice').value) || 0 });
+    ['#itPrice', '#itQty'].forEach(q => $(q).addEventListener('input', e => { e.target.value = e.target.value.replace(/[^\d]/g, ''); }));
+    let unit = x?.unit || '개';
+    $('#itUnit').addEventListener('click', e => {
+      const b = e.target.closest('[data-u]'); if (!b) return;
+      unit = b.dataset.u; $('#itUnitTxt').textContent = unit;
+      body.querySelectorAll('#itUnit [data-u]').forEach(c => c.setAttribute('aria-pressed', c.dataset.u === unit));
+    });
+    const read = () => {
+      const v = { name: $('#itName').value.trim(), sub: $('#itSub').value.trim(), price: Number($('#itPrice').value) || 0, unit };
+      if ($('#itQty').value.trim() !== '') v.qty = Number($('#itQty').value);
+      return v;
+    };
     $('#itSave').addEventListener('click', async () => {
       const v = read();
       if (!v.name) { toast('이름을 넣어 주세요'); return; }
       const it = clone(S.items), now = new Date().toISOString();
       if (x) {
         const t = it.list.find(i => i.id === id);
-        t.history = [...(t.history || []), { name: t.name, sub: t.sub, price: t.price, at: now }];
+        t.history = [...(t.history || []), { name: t.name, sub: t.sub, price: t.price, qty: t.qty, unit: t.unit, at: now }];
         Object.assign(t, v);
+        if (!('qty' in v)) delete t.qty;
         logAct(`내 물건 고침 · ${v.name} ${won(v.price)}`);
       } else {
         it.list = [...(it.list || []), { id: newId(), ...v, at: now }];
@@ -1499,22 +1717,22 @@ function itemSheet(id) {
     });
     $('#itOut')?.addEventListener('click', async () => {
       const sh = clone(S.shopping);
-      if (shopOf().some(s => s.fromItem === id && !s.done)) { toast('이미 살 것에 있어요'); return; }
-      sh.list = [...(sh.list || []), { id: newId(), name: x.name, option: x.sub || '', price: x.price || 0, qty: 1, group: '생활용품', fromItem: id, done: false, at: new Date().toISOString() }];
-      try { await putShopping(sh); logAct(`살 것 추가 · ${x.name} (다 떨어짐)`); toast('필요한 물건에 넣었어요'); closeSheet(); } catch (e) { saveFail(); }
+      if (shopOf().some(s => s.fromItem === id && !s.done)) { toast('이미 사고 싶은 것에 있어요'); return; }
+      sh.list = [...(sh.list || []), { id: newId(), name: x.name, option: x.sub || '', price: x.price || 0, qty: 1, group: '생활용품', fromItem: id, ...(x.image ? { image: x.image } : {}), done: false, at: new Date().toISOString() }];
+      try { await putShopping(sh); logAct(`사고 싶은 것 추가 · ${x.name} (다 떨어짐)`); toast('사고 싶은 것에 넣었어요'); closeSheet(); } catch (e) { saveFail(); }
     });
   }, 'toss');
 }
 
 function shopSheet(id) {
   const x = id ? (S.shopping.list || []).find(i => i.id === id) : null;
-  const groups = [...new Set(['옷', '생활용품', ...shopOf().map(s => s.group).filter(Boolean)])];
+  const groups = [...new Set(['옷', '생활용품', '건강', ...shopOf().map(s => s.group).filter(Boolean)])];
   let group = x?.group || '';
-  openSheet(`<div class="tr-head"><h3>${x ? '살 것 고치기' : '살 것 추가'}</h3><p>${x ? esc(x.name) : '사야 할 물건을 글로 적어 두어요'}</p></div>
+  openSheet(`${x?.image ? `<div class="item-hero">${prod3dHTML(x)}</div>` : ''}<div class="tr-head"><h3>${x ? '사고 싶은 것 고치기' : '사고 싶은 것 추가'}</h3><p>${x ? esc(x.name) : '사고 싶은 물건을 적어 두어요'}</p></div>
     <div class="sh-sec"><span class="label">이름</span><input class="field" id="spName" maxlength="60" placeholder="예: 크롭 후드 집업" value="${esc(x?.name || '')}"></div>
     <div class="sh-sec"><span class="label">옵션</span><input class="field" id="spOpt" maxlength="40" placeholder="예: 그레이 / FREE" value="${esc(x?.option || '')}"></div>
     <div class="sav-grid">
-      <label>가격<span class="numfield"><input class="field" id="spPrice" inputmode="numeric" placeholder="0" value="${x?.price ?? ''}"><span>원</span></span></label>
+      <label>가격<span class="numfield"><input class="field" id="spPrice" inputmode="numeric" placeholder="미정" value="${x?.price ?? ''}"><span>원</span></span></label>
       <label>수량<span class="numfield"><input class="field" id="spQty" inputmode="numeric" value="${x?.qty ?? 1}"><span>개</span></span></label>
     </div>
     <div class="sh-sec"><span class="label">묶음</span><div class="parts" id="spGroup">${groups.map(g => `<button class="pchip" data-g="${esc(g)}" aria-pressed="${g === group}">${esc(g)}</button>`).join('')}</div></div>
@@ -1527,24 +1745,24 @@ function shopSheet(id) {
       body.querySelectorAll('#spGroup [data-g]').forEach(g => g.setAttribute('aria-pressed', g.dataset.g === group));
     });
     $('#spSave').addEventListener('click', async () => {
-      const v = { name: $('#spName').value.trim(), option: $('#spOpt').value.trim(), price: Number($('#spPrice').value) || 0, qty: Math.max(1, Number($('#spQty').value) || 1), group };
+      const v = { name: $('#spName').value.trim(), option: $('#spOpt').value.trim(), price: $('#spPrice').value.trim() === '' ? null : Number($('#spPrice').value) || 0, qty: Math.max(1, Number($('#spQty').value) || 1), group };
       if (!v.name) { toast('이름을 넣어 주세요'); return; }
       const sh = clone(S.shopping), now = new Date().toISOString();
       if (x) {
         const t = sh.list.find(i => i.id === id);
         t.history = [...(t.history || []), { name: t.name, option: t.option, price: t.price, qty: t.qty, group: t.group, at: now }];
         Object.assign(t, v);
-        logAct(`살 것 고침 · ${v.name} ${won(v.price * v.qty)}`);
+        logAct(`사고 싶은 것 고침 · ${v.name} ${v.price == null ? '가격 미정' : won(v.price * v.qty)}`);
       } else {
         sh.list = [...(sh.list || []), { id: newId(), ...v, done: false, at: now }];
-        logAct(`살 것 추가 · ${v.name}${v.option ? ` (${v.option})` : ''} ${won(v.price * v.qty)}`);
+        logAct(`사고 싶은 것 추가 · ${v.name}${v.option ? ` (${v.option})` : ''} ${v.price == null ? '가격 미정' : won(v.price * v.qty)}`);
       }
       try { await putShopping(sh); toast('저장했어요'); closeSheet(); } catch (e) { saveFail(); }
     });
     $('#spDel')?.addEventListener('click', async () => {
       const sh = clone(S.shopping);
       Object.assign(sh.list.find(i => i.id === id), { removed: true, removedAt: new Date().toISOString() });
-      try { await putShopping(sh); logAct(`살 것 뺌 · ${x.name}`); toast('목록에서 뺐어요 (기록은 남아요)'); closeSheet(); } catch (e) { saveFail(); }
+      try { await putShopping(sh); logAct(`사고 싶은 것 뺌 · ${x.name}`); toast('목록에서 뺐어요 (기록은 남아요)'); closeSheet(); } catch (e) { saveFail(); }
     });
   }, 'toss');
 }
@@ -2142,7 +2360,12 @@ $view.addEventListener('click', e => {
   const sc = e.target.closest('[data-shop-check]');
   if (sc) { toggleShop(sc.dataset.shopCheck, sc); return; }
   const sp = e.target.closest('[data-shop]');
-  if (sp) { shopSheet(sp.dataset.shop); return; }
+  if (sp) { if (suppressClick) { suppressClick = false; return; } shopSheet(sp.dataset.shop); return; }
+  if (e.target.closest('[data-plan]')) { planSheet(); return; }
+  if (e.target.closest('[data-fixed-add]')) { fixedSheet(null); return; }
+  if (e.target.closest('[data-go-fixed]')) { location.hash = '#fixed'; return; }
+  const fxr = e.target.closest('[data-fixed]');
+  if (fxr) { fixedSheet(fxr.dataset.fixed); return; }
   const trf = e.target.closest('[data-transfer]');
   if (trf) { transferSheet(trf.dataset.transfer || null); return; }
   const trr = e.target.closest('[data-tr]');
@@ -2225,8 +2448,10 @@ function instructions() {
 - 사용자가 말하지 않은 내용을 지어내지 마. 날짜나 양이 애매하면 넣기 전에 물어봐.
 - '오늘', '내일', '토요일' 같은 말은 아래 날짜를 기준으로 YYYY-MM-DD로 바꿔.
 - 내 통장끼리 돈을 옮겼다고 하면 transfer로 기록해(소비가 아님).
-- 사야 할 것은 add_shopping, 자주 쓰는 물건과 가격은 add_item으로 넣어.
-- 돈을 썼다고 하면 add_expense로 날짜·금액·내용을 기록해. 카드로 긁었으면 method '나라사랑카드'. 통장을 말하면 bank에 넣어.
+- 사고 싶은 것은 add_shopping, 자주 쓰는 물건과 가격·가진 개수는 add_item으로 넣어.
+- 돈을 썼다고 하면 add_expense로 날짜·금액·내용을 기록해. 카드로 긁었으면 method '나라사랑카드'(신한 통장 돈이라 신한 잔액에서 저절로 빠짐). 통장을 말하면 bank에 넣어.
+- 말로 알려 준 지출·입금은 apply_to_balance true(그 통장 잔액에도 반영). 은행 앱 캡처에서 읽은 거래는 잔액에 이미 들어 있으니 false.
+- 매달 나가는 돈(통신비, 구독 같은)은 set_fixed로 고정 지출에 넣어. 군적금은 이미 들어 있어.
 - 시간이 걸리는 할 일은 minutes(분)에, 개수 같은 양은 amount에 넣어. 사이트 개발은 kind "dev", 운동은 kind "workout", 감사한 점 3개는 kind "thanks".
 - 감사한 점은 그날 자정 전까지만 적을 수 있고, 지나면 탈락이야.
 - 앱 화면이나 기능을 고치는 일은 네 일이 아니야. 그런 요청이면 코딩은 대화 밖 개발 세션에서 한다고 알려줘.
@@ -2236,8 +2461,10 @@ function instructions() {
 내일(${tk}) 할 일: ${JSON.stringify(todosOf(tk).map(slim))}
 오늘 운동 부위: ${partOf(TODAY)}, 내일 운동 부위: ${partOf(tk)}
 주간 운동 루틴: ${split}
-돈: 월급날 매달 ${S.money.payday}일, 적금 ${manwon(S.money.savings)} 자동이체, 한 달 쓸 수 있는 돈 ${manwon(S.money.spend)}, 잔액 ${bal}
-통장 역할: 농협=월급 통장, 신한=나라사랑 통장(나라사랑카드), 카카오뱅크=따로 모으는 돈. 쓸 수 있는 돈 = 농협 + 신한.
+돈: 월급날 매달 ${S.money.payday}일, 예상 월급 ${won(expectedSalary())}, 잔액 ${bal}
+이번 달 관리: 들어온 돈 ${won(monthPlan(mk).income)} − 고정 지출 ${won(monthPlan(mk).fixedSum)} = 쓸 수 있는 돈 ${won(monthPlan(mk).usable)}, 쓴 돈 ${won(monthPlan(mk).spent)}, 남은 돈 ${won(monthPlan(mk).left)}
+고정 지출: ${JSON.stringify(fixedRows().map(x => ({ id: x.id, name: x.name, amount: x.amount, day: x.day })))}
+통장 역할: 농협=월급 통장, 신한=나라사랑 통장(나라사랑카드와 같은 돈), 카카오뱅크=따로 모으는 돈, 토스=아직 안 정함. ${['use', 'save', ''].map(g => `${GROUP_NAME[g]} = ${banksIn(g).map(b => b.name).join(' + ') || '없음'}`).join(', ')}.
 군적금: ${savPlan().accts.map(a => `${a.short} ${won(a.bal)}(매달 ${manwon(a.monthly)})`).join(', ') || '없음'}, 만기 예상 ${won(savPlan().payout)} (매달 ${S.savings.payday}일 자동 입금, 앱이 알아서 채움)
 주식: ${stockSum().rows.map(r => `${r.name} ${r.qty}주 평균 ${won(r.avg)} 현재가 ${r.price != null ? won(r.price) : '미입력'}`).join(', ') || '없음'} (현재가를 말하면 set_stock)
 이번 달(${mk}) 쓴 돈 합계 ${won(spentIn(mk))}, 최근 내역: ${JSON.stringify(recentSpend)}
@@ -2383,11 +2610,11 @@ function makeTools(before, acts) {
     },
     {
       name: 'set_balance',
-      description: 'Sets the current balance in won for one bank account: 농협, 카카오뱅크 or 신한.',
+      description: 'Sets the current balance in won for one bank account: 농협, 카카오뱅크, 신한 or 토스. 신한 is also the 나라사랑카드 (same money).',
       inputSchema: { type: 'object', properties: { bank: { type: 'string', enum: BANKS.map(b => b.name) }, amount: { type: 'number' } }, required: ['bank', 'amount'] },
       execute: async input => {
         const b = BANKS.find(x => x.name === input.bank || x.id === input.bank);
-        if (!b) throw new Error('은행은 농협, 카카오뱅크, 신한 중 하나예요');
+        if (!b) throw new Error(`은행은 ${BANKS.map(x => x.name).join(', ')} 중 하나예요`);
         const amt = Math.round(Number(input.amount));
         if (!Number.isFinite(amt)) throw new Error('amount는 원 단위 숫자예요');
         keep('money/main', S.money);
@@ -2398,11 +2625,12 @@ function makeTools(before, acts) {
     },
     {
       name: 'add_expense',
-      description: 'Records money the user spent: date (YYYY-MM-DD), amount in won, title (what it was for), optional bank (농협, 카카오뱅크, 신한 or 현금). Returns the id.',
+      description: 'Records money the user spent: date (YYYY-MM-DD), amount in won, title (what it was for), optional bank (농협, 카카오뱅크, 신한, 토스 or 현금). Returns the id.',
       inputSchema: { type: 'object', properties: {
         date: { type: 'string' }, amount: { type: 'number' }, title: { type: 'string' }, bank: { type: 'string', enum: [...BANKS.map(b => b.name), '현금'] },
         category: { type: 'string', enum: CATS.map(c => c.name) },
         method: { type: 'string', enum: ['나라사랑카드', '계좌이체', '현금'], description: '나라사랑카드면 신한 카드 사용으로 기록' },
+        apply_to_balance: { type: 'boolean', description: 'true면 그 통장 잔액에서도 뺀다(말로 알려 준 지출). 은행 앱 캡처에서 읽은 거래는 false' },
       }, required: ['date', 'amount', 'title'] },
       execute: async input => {
         const d = needDate(input.date), amt = Math.round(Number(input.amount));
@@ -2419,9 +2647,14 @@ function makeTools(before, acts) {
         if (method) item.method = method;
         if (method === 'card') item.bank = 'shinhan';
         if (method === 'cash') item.bank = 'cash';
+        if (input.apply_to_balance !== false && item.bank && item.bank !== 'cash') {
+          keep('money/main', S.money);
+          const applied = await applyToBalance(item.bank, -amt);
+          if (applied) item.applied = applied;
+        }
         await putSpend(mk, [...clone(S.spend[mk]?.items || []), item]);
-        acts.push(`${dotDate(d)} 지출 ${title} ${won(amt)}`);
-        return { ok: true, id: item.id, monthTotal: spentIn(mk) };
+        acts.push(`${dotDate(d)} 지출 ${title} ${won(amt)}${item.applied ? ` (${bankName(item.bank)} 잔액 ${won(S.money.balances[item.bank])})` : ''}`);
+        return { ok: true, id: item.id, monthTotal: spentIn(mk), balance: item.applied ? S.money.balances[item.bank] : undefined };
       },
     },
     {
@@ -2448,7 +2681,7 @@ function makeTools(before, acts) {
     },
     {
       name: 'transfer',
-      description: 'Moves money between the user\'s own bank accounts (농협, 카카오뱅크, 신한) after they actually transferred it. Only balances move; it is not spending or income.',
+      description: 'Moves money between the user\'s own bank accounts (농협, 카카오뱅크, 신한, 토스) after they actually transferred it. Only balances move; it is not spending or income.',
       inputSchema: { type: 'object', properties: {
         from: { type: 'string', enum: BANKS.map(b => b.name) }, to: { type: 'string', enum: BANKS.map(b => b.name) }, amount: { type: 'number' }, memo: { type: 'string' },
       }, required: ['from', 'to', 'amount'] },
@@ -2466,26 +2699,27 @@ function makeTools(before, acts) {
     },
     {
       name: 'add_shopping',
-      description: 'Adds something the user needs to buy to the 필요한 물건 list: name, option (color/size), price in won, qty, group (예: 옷, 생활용품).',
+      description: 'Adds something the user wants to buy to the 사고 싶은 것 list: name, option (color/size), price in won (omit if not decided), qty, group (예: 옷, 생활용품, 건강).',
       inputSchema: { type: 'object', properties: { name: { type: 'string' }, option: { type: 'string' }, price: { type: 'number' }, qty: { type: 'number' }, group: { type: 'string' } }, required: ['name'] },
       execute: async input => {
         keep('shopping/main', S.shopping);
         const sh = clone(S.shopping);
-        const v = { id: newId(), name: String(input.name).slice(0, 60), option: String(input.option || '').slice(0, 40), price: Math.max(0, Math.round(Number(input.price) || 0)), qty: Math.max(1, Math.round(Number(input.qty) || 1)), group: String(input.group || '').slice(0, 20), done: false, at: new Date().toISOString() };
+        const v = { id: newId(), name: String(input.name).slice(0, 60), option: String(input.option || '').slice(0, 40), price: input.price == null ? null : Math.max(0, Math.round(Number(input.price) || 0)), qty: Math.max(1, Math.round(Number(input.qty) || 1)), group: String(input.group || '').slice(0, 20), done: false, at: new Date().toISOString() };
         sh.list = [...(sh.list || []), v];
         await putShopping(sh);
-        acts.push(`살 것 추가: ${v.name}`);
+        acts.push(`사고 싶은 것 추가: ${v.name}`);
         return { ok: true, id: v.id };
       },
     },
     {
       name: 'add_item',
-      description: 'Adds an everyday item the user regularly uses to 내 물건 with its price in won (e.g. 바디워시 7900).',
-      inputSchema: { type: 'object', properties: { name: { type: 'string' }, sub: { type: 'string', description: '제품명·용량' }, price: { type: 'number' } }, required: ['name'] },
+      description: 'Adds an everyday item the user regularly uses to 내 물건 with its price in won per one (e.g. 바디워시 7900) and how many they have (qty + unit 개/통/장/병).',
+      inputSchema: { type: 'object', properties: { name: { type: 'string' }, sub: { type: 'string', description: '제품명·용량' }, price: { type: 'number' }, qty: { type: 'number' }, unit: { type: 'string', enum: ['개', '통', '장', '병'] } }, required: ['name'] },
       execute: async input => {
         keep('items/main', S.items);
         const it = clone(S.items);
-        const v = { id: newId(), name: String(input.name).slice(0, 30), sub: String(input.sub || '').slice(0, 40), price: Math.max(0, Math.round(Number(input.price) || 0)), at: new Date().toISOString() };
+        const v = { id: newId(), name: String(input.name).slice(0, 30), sub: String(input.sub || '').slice(0, 40), price: Math.max(0, Math.round(Number(input.price) || 0)), unit: ['개', '통', '장', '병'].includes(input.unit) ? input.unit : '개', at: new Date().toISOString() };
+        if (input.qty != null) v.qty = Math.max(0, Math.round(Number(input.qty) || 0));
         it.list = [...(it.list || []), v];
         await putItems(it);
         acts.push(`내 물건 추가: ${v.name}`);
@@ -2494,9 +2728,10 @@ function makeTools(before, acts) {
     },
     {
       name: 'add_income',
-      description: 'Records money that came in (salary, transfer in): date (YYYY-MM-DD), amount in won, title, optional bank.',
+      description: 'Records money that came in: date (YYYY-MM-DD), amount in won, title (use "월급" for salary — 이번 달 관리가 그 금액으로 바뀜), optional bank.',
       inputSchema: { type: 'object', properties: {
         date: { type: 'string' }, amount: { type: 'number' }, title: { type: 'string' }, bank: { type: 'string', enum: [...BANKS.map(b => b.name), '현금'] },
+        apply_to_balance: { type: 'boolean', description: 'true면 그 통장 잔액에도 더한다(말로 알려 준 입금). 은행 앱 캡처에서 읽은 거래는 false' },
       }, required: ['date', 'amount', 'title'] },
       execute: async input => {
         const d = needDate(input.date), amt = Math.round(Number(input.amount));
@@ -2507,6 +2742,11 @@ function makeTools(before, acts) {
         keep(`spend/${mk}`, S.spend[mk]?.items);
         const item = { id: newId(), type: 'in', date: d, amount: amt, title, at: new Date().toISOString() };
         if (bank) item.bank = bank;
+        if (input.apply_to_balance !== false && bank && bank !== 'cash') {
+          keep('money/main', S.money);
+          const applied = await applyToBalance(bank, amt);
+          if (applied) item.applied = applied;
+        }
         await putSpend(mk, [...clone(S.spend[mk]?.items || []), item]);
         acts.push(`${dotDate(d)} 입금 ${title} +${won(amt)}`);
         return { ok: true, id: item.id };
@@ -2522,25 +2762,62 @@ function makeTools(before, acts) {
         const x = items.find(i => i.id === String(input.id) && !i.removed);
         if (!x) throw new Error(`${mk}에 id ${input.id} 지출이 없어요`);
         keep(`spend/${mk}`, S.spend[mk]?.items);
+        if (x.applied) keep('money/main', S.money);
         Object.assign(x, { removed: true, removedAt: new Date().toISOString() });
         await putSpend(mk, items);
+        await revertApplied(x);
         acts.push(`지출 지움: ${x.title} ${won(x.amount)}`);
         return { ok: true };
       },
     },
     {
       name: 'set_money_plan',
-      description: 'Changes the payday (day of month), the monthly automatic savings, or the monthly spending budget, in won.',
-      inputSchema: { type: 'object', properties: { payday: { type: 'number' }, savings: { type: 'number' }, spend: { type: 'number' } } },
+      description: 'Changes the payday (day of month), the expected monthly salary (예상 월급) in won, or the monthly automatic savings. 이번 달 쓸 수 있는 돈은 들어온 돈 − 고정 지출로 저절로 정해진다.',
+      inputSchema: { type: 'object', properties: { payday: { type: 'number' }, salary: { type: 'number' }, savings: { type: 'number' }, spend: { type: 'number' } } },
       execute: async input => {
         keep('money/main', S.money);
         const money = clone(S.money);
         if (input.payday != null) money.payday = Math.min(28, Math.max(1, Math.round(Number(input.payday))));
         if (input.savings != null) money.savings = Math.max(0, Math.round(Number(input.savings)));
         if (input.spend != null) money.spend = Math.max(0, Math.round(Number(input.spend)));
+        if (input.salary != null) money.salary = Math.max(0, Math.round(Number(input.salary)));
         await putMoney(money);
         acts.push('월급 계획 수정');
-        return { ok: true };
+        return { ok: true, plan: monthPlan(TODAY.slice(0, 7)) };
+      },
+    },
+    {
+      name: 'set_fixed',
+      description: 'Adds or updates a monthly fixed expense (고정 지출, e.g. 통신비) by name: amount in won and the day of month it goes out; remove: true hides it. 군적금 is already included automatically.',
+      inputSchema: { type: 'object', properties: {
+        name: { type: 'string' }, amount: { type: 'number' }, day: { type: 'number' }, bank: { type: 'string', enum: BANKS.map(b => b.name) }, remove: { type: 'boolean' },
+      }, required: ['name'] },
+      execute: async input => {
+        const name = String(input.name || '').trim().slice(0, 20);
+        if (!name) throw new Error('name이 필요해요');
+        keep('fixed/main', S.fixed);
+        const fx = clone(S.fixed), now = new Date().toISOString();
+        fx.list = fx.list || [];
+        let t = fx.list.find(x => !x.removed && x.name === name);
+        if (input.remove) {
+          if (!t) throw new Error(`${name} 고정 지출이 없어요`);
+          Object.assign(t, { removed: true, removedAt: now });
+          await putFixed(fx);
+          acts.push(`고정 지출 뺌: ${name}`);
+          return { ok: true };
+        }
+        const bank = BANKS.find(b => b.name === input.bank || b.id === input.bank)?.id;
+        if (!t) {
+          if (!(input.amount > 0)) throw new Error('새 고정 지출은 amount가 필요해요');
+          t = { id: newId(), name, emoji: '📦', amount: 0, day: S.money.payday || 10, bank: '', at: now };
+          fx.list.push(t);
+        } else t.history = [...(t.history || []), { name: t.name, amount: t.amount, day: t.day, bank: t.bank, at: now }];
+        if (input.amount > 0) t.amount = Math.round(Number(input.amount));
+        if (input.day > 0) t.day = Math.min(31, Math.max(1, Math.round(Number(input.day))));
+        if (bank) t.bank = bank;
+        await putFixed(fx);
+        acts.push(`고정 지출 ${name} ${won(t.amount)} (매달 ${t.day}일)`);
+        return { ok: true, plan: monthPlan(TODAY.slice(0, 7)) };
       },
     },
   ];
@@ -2560,6 +2837,7 @@ async function undoTurn(at) {
       else if (col === 'transfers') await putTransfers(id, val || []);
       else if (col === 'shopping') await putShopping(val || { list: [] });
       else if (col === 'items') await putItems(val || { list: [] });
+      else if (col === 'fixed') await putFixed(val || { list: [] });
     }
     delete UI.undo[at];
     logAct('매니저가 한 일을 되돌림');

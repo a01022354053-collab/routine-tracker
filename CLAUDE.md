@@ -17,10 +17,13 @@
 - 웹 빌드: `npm run build`/`npm run dev` 전에 `tools/build-web.mjs`가 `artifact/`를 `public/`(index.html·assets·private·web·vendor, .gitignore)로 옮기고 본문을 완전한 HTML로 감싼다. `/`는 `next.config.ts` rewrite로 `public/index.html`. 글꼴은 `artifact/fonts/`가 있으면 그것, 없으면(Vercel) CDN(Pretendard·Tossface jsDelivr).
 - 글꼴은 `tools/fetch-fonts.sh`로 `artifact/fonts/`에 받는다(저장소에 넣지 않음). 아티팩트에는 이미 올라가 있어서, 코드만 고쳤으면 바뀐 파일만 `files`로 다시 올리면 된다.
 - 아티팩트 다시 올리기: Artifact 도구로 `file_path: artifact/index.html`, `url`은 위 주소, 바뀐 파일만 `files`에 (예: `{"assets/app.js": "artifact/assets/app.js"}`). `capabilities`는 생략해서 그대로 둔다(지금: db 규칙 소유자만 읽기·쓰기, sample(사진 포함), downloads). 웹은 `main`에 올리면 Vercel이 다시 배포한다.
-- 화면: `#today` 오늘 루틴(달력 + 고른 날의 할 일 카드, 가로로 넘김) · `#archive` 저장소(달별 달성률, 날짜별 기록) · `#money` 돈 관리 · `#fixed` 고정 지출 · `#items` 내 물건(자주 쓰는 물건과 가격, 사진 있는 건 입체 카드, '다 떨어졌어요'로 살 것에 넣기) · `#shopping` 필요한 물건(살 것을 글로, 묶음별, 체크하면 산 것). 컴퓨터(960px 이상)에서는 두 칸으로 넓게.
+- 화면: `#today` 오늘 루틴(달력 + 고른 날의 할 일 카드, 가로로 넘김) · `#archive` 저장소(달별 달성률, 날짜별 기록) · `#money` 돈 관리 · `#fixed` 고정 지출(군적금은 적금 설정에서 저절로 + 직접 넣은 것, 이번 달 나갔어요/예정) · `#items` 내 물건(자주 쓰는 물건, 하나 가격, 가진 개수·단위, 사진 있는 건 입체 카드, '다 떨어졌어요'로 사고 싶은 것에 넣기) · `#shopping` 사고 싶은 것(예전 이름 '필요한 물건'·'살 것', 묶음별, 사진 있는 건 입체 카드, 가격 미정 가능, 체크하면 산 것). 컴퓨터(960px 이상)에서는 두 칸으로 넓게.
 - 할 일 정하기: 오늘을 보고 있으면 '내일 할 일' 칸이 늘 보인다(폰이 없는 날을 위해 전날 미리 정함). '+ 할 일 추가' 카드(날짜·종류·이름·아이콘·시간·양, 자주 하는 할 일, '넣고 하나 더'), '오늘 목록 그대로 가져오기', '고치기' 모드(눌러서 이름·시간 고치기, 빼기 = 숨김). 고친 할 일은 예전 값을 `history`에 남긴다.
 - 돈 관리는 이 화면만 토스 다크 모드 디자인(납작한 카드 `--t-*` 색, 토스 파랑, Pretendard 큰 숫자, '~했어요' 문장). 입력은 모두 수동. 내 자산(잔액 입력·내역 추가) → 계좌(누르면 토스식 계좌 상세: 잔액, 이 통장 내역, 잔액 기록) → 월급날 → 이번 달 소비(지난달 같은 기간과 비교, 예산 65만원 대비, 분류별) → 그 달 입출금 내역. 은행 자동 연결은 불가(오픈뱅킹·마이데이터는 허가받은 사업자 전용)라서, '은행 앱 캡처로 넣기'로 사진을 매니저에게 보내면 잔액·거래를 읽어 넣는다.
-- 돈 관리 구성: 내 자산(쓸 수 있는 돈=농협+신한, 따로 모으는 돈=카카오뱅크, 군적금, 주식) → 계좌 → 군적금 저금통(병 두 개가 차오름, 매달 10일 IBK 30만·신한 25만 자동 입금 기록, 만기=넣은 돈×2 정부 100% 매칭·이자 별도) → 주식 표(산 가격·지금 가격·전일 대비·손익, 한국식으로 이익 빨강·손실 파랑) → 나라사랑카드(입체 카드 `artifact/private/card-narasarang.png`, 카드 사용 = `method: 'card'` 지출, 이번 달 정리) → 월급날 → 소비 → 내역.
+- 이번 달 관리(돈 관리 두 번째 카드, `monthPlan(mk)`): 들어온 돈(그 달 '월급·급여·봉급' 입금이 있으면 그 금액, 없으면 예상 월급 `money.salary` — 없으면 적금+65만) + 그 밖의 입금 − 고정 지출(`fixedRows()`) = 쓸 수 있는 돈, − 쓴 돈 = 남은 돈(이번 달이면 하루에 쓸 수 있는 돈). 소비 카드의 예산도 이 '쓸 수 있는 돈'.
+- 잔액 반영: 내역을 기록할 때 '○○ 잔액에서 빼기/더하기'(기본 켜짐)면 그 통장 잔액을 바꾸고 기록에 `applied: { bank, delta }`를 남긴다. 숨기거나 고치면 되돌린다. 나라사랑카드(`method: 'card'`)는 신한 통장 돈이라 신한 잔액이 같이 줄고, 카드 칸에도 신한 잔액이 보인다. 매니저는 말로 들은 건 `apply_to_balance` true, 은행 앱 캡처에서 읽은 건 false.
+- 통장 묶음: 쓸 수 있는 돈(농협·신한) · 따로 모으는 돈(카카오뱅크) · 그 밖의 통장(토스, 아직 안 정함). 통장 화면에서 바꾸면 `money/main.groups`에 남는다. 토스 아이콘은 `artifact/private/bank-toss.png`.
+- 돈 관리 구성: 내 자산(묶음별 합계, 군적금, 주식) → 이번 달 관리 → 계좌 → 군적금 저금통(병 두 개가 차오름, 매달 10일 IBK 30만·신한 25만 자동 입금 기록, 만기=넣은 돈×2 정부 100% 매칭·이자 별도) → 주식 표(산 가격·지금 가격·전일 대비·손익, 한국식으로 이익 빨강·손실 파랑) → 나라사랑카드(입체 카드 `artifact/private/card-narasarang.png`, 카드 사용 = `method: 'card'` 지출, 이번 달 정리) → 월급날 → 소비 → 내역.
 - 계좌 이체: 내 통장끼리 실제로 옮긴 돈을 숫자만 옮긴다(소비·수입 아님). 계좌 줄의 '이체' 버튼이나 내 자산의 '이체'. 이체 기록을 누르면 취소(잔액 원상복구, 기록은 removed로 남김).
 - 주식 시세(웹): 돈 관리 화면을 열면 `/api/quote`로 받아 `stocks/main`을 갱신한다(10분에 한 번, 가격이 바뀔 때만 history에 쌓음).
 - 주식 시세(아티팩트): 아티팩트는 바깥에 접속할 수 없어서, 예약 작업 '일상 매니저 주식 시세 갱신'(trig_01Kr3EFGi9EueK6q3P2RtCWL, 평일 KST 9:47·11:47·13:47·15:47)이 새 세션에서 시세를 받아 `ArtifactData`로 `stocks/main`의 holdings[].price·priceAt·quote·history를 갱신한다. 손으로 할 때는 `bash tools/stock-quote.sh 005930`. 토스증권과 같은 거래소 가격으로, 정규장과 넥스트레이드 시간외 중 더 최근 체결가를 쓴다(토스증권 내부 API는 로그인 브라우저 전용이라 못 씀). history는 지우지 않는다.
@@ -34,16 +37,17 @@
   - `kind`: 없음(일반) · `dev`(사이트 개발, `note`=무엇을 할지) · `workout`(운동, 부위는 `workout/`에서) · `thanks`(감사한 점 3개, `items`)
 - `workout/<YYYY-MM-DD>`: `{ date, part, plan }` — 없으면 주간 루틴의 그 요일 부위
 - `settings/main`: `{ split: { "0": "하체", "1": "등", "2": "가슴", "3": "하체", "4": "휴식", "5": "등", "6": "가슴" } }` (0=일요일)
-- `money/main`: `{ payday: 10, savings: 550000, spend: 650000, balances: { nh, kakao, shinhan }, balanceAt: { nh, ... } }` — 지금 잔액과 넣은 시각
+- `money/main`: `{ payday: 10, savings: 550000, spend: 650000, salary?, groups?: { toss: 'use'|'save'|'' }, balances: { nh, kakao, shinhan, toss }, balanceAt: { nh, ... } }` — 지금 잔액과 넣은 시각. salary = 예상 월급
+- `fixed/main`: `{ list: [{ id, name, emoji, amount, day, bank, at, history?, removed? }] }` — 직접 넣은 고정 지출(군적금은 savings에서)
 - `balhist/<YYYY-MM>`: `{ month, items: [{ at, bank, amount }] }` — 잔액이 바뀔 때마다 쌓임
-- `spend/<YYYY-MM>`: `{ month, items: [{ id, date, amount, title, type?, cat?, bank?, at, history?, removed? }] }` — 입출금 내역. `type: 'in'`이면 들어온 돈, 없으면 나간 돈. `cat`: food·snack·life·move·shop·phone·fun·etc. bank: nh·kakao·shinhan·cash
+- `spend/<YYYY-MM>`: `{ month, items: [{ id, date, amount, title, type?, cat?, bank?, method?, applied?, at, history?, removed? }] }` — 입출금 내역. `type: 'in'`이면 들어온 돈, 없으면 나간 돈. `cat`: food·snack·life·move·shop·phone·fun·etc. bank: nh·kakao·shinhan·cash
 - `chatlog/<YYYY-MM-DD>`: `{ date, messages: [{ role, content, at, actions? }] }` — 매니저와 나눈 대화 전부
 - `log/<YYYY-MM-DD>`: `{ date, entries: [{ at, text }] }` — 체크, 감사한 점, 메모, 운동, 잔액, 지출, 매니저가 한 일까지 바꾼 것 전부
 - `savings/main`: `{ payday, lastMonth: 'YYYY-MM'(마지막 입금 달), lastMonthGuess?, match: 1, accounts: [{ id, name, short, color, monthly, initial, asOf, deposits: [{ month, date, amount, auto, at }], history? }] }` — 잔액 = initial + deposits. 앱을 열면 지난 월급날 입금을 달마다 한 번씩 저절로 기록한다
 - `stocks/main`: `{ holdings: [{ id, name, code?, qty, avg, price, priceAt, quote?: { price, change, rate, open, high, low, status, tradedAt, fetchedAt }, history: [{ at, price }], changes? }] }`
 - `transfers/<YYYY-MM>`: `{ month, items: [{ id, date, at, from, to, amount, memo?, removed? }] }` — 통장끼리 옮긴 기록
-- `items/main`: `{ list: [{ id, name, sub, price, image?, emoji?, at, history?, removed? }] }` — 내 물건. 사진은 아티팩트의 `private/item-*.png`(저장소에는 넣지 않음)
-- `shopping/main`: `{ list: [{ id, name, option, price, qty, group, done, doneAt?, fromItem?, at, history?, removed? }] }` — 필요한 물건
+- `items/main`: `{ list: [{ id, name, sub, price(하나에), qty?(가진 개수), unit?(개·통·장·병), image?, emoji?, at, history?, removed? }] }` — 내 물건. 사진은 `artifact/private/item-*.png`
+- `shopping/main`: `{ list: [{ id, name, option, price(null이면 가격 미정), qty, group, image?, done, doneAt?, fromItem?, at, history?, removed? }] }` — 사고 싶은 것
 - `chat/log`: 예전 대화 문서(날짜별 `chatlog`로 옮겨졌고 `migrated: true`). 지우지 않고 둔다
 - 저장소 화면의 '전체 기록 내려받기'는 위 전부를 JSON 한 파일로 준다(`downloads` 기능)
 - 처음 넣은 기록은 `tools/seed.json`
