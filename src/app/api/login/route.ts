@@ -1,6 +1,6 @@
 // 비밀번호를 맞추면 1년짜리 로그인 쿠키를 준다. 여러 번 틀리면 잠깐 잠근다
 import { cookies } from "next/headers";
-import { COOKIE, SESSION_DAYS, TABLE, db, makeToken, missingEnv, passwordMatches } from "@/lib/server";
+import { COOKIE, SESSION_DAYS, TABLE, db, keyKind, makeToken, missingEnv, passwordMatches } from "@/lib/server";
 
 const LOCK_AFTER = 8;
 const LOCK_MINUTES = 10;
@@ -21,7 +21,11 @@ export async function POST(request: Request) {
 
   const sb = db();
   const { data: row, error } = await sb.from(TABLE).select("data").eq("path", PATH).maybeSingle();
-  if (error) return Response.json({ error: `저장소에 연결하지 못했어요 (${error.message})` }, { status: 503 });
+  if (error) {
+    const kind = keyKind();
+    const hint = kind === "publishable" || kind === "anon" ? " — SUPABASE_SECRET_KEY에 공개 키가 들어 있어요. Secret 키(sb_secret_…)로 바꿔 주세요" : "";
+    return Response.json({ error: `저장소에 연결하지 못했어요 (${error.message})${hint}` }, { status: 503 });
+  }
   const guard: Guard = { fails: 0, lockedUntil: null, ...((row?.data as Guard | undefined) ?? {}) };
   if (guard.lockedUntil && guard.lockedUntil > Date.now()) {
     return Response.json({ error: "너무 많이 틀렸어요. 잠시 후 다시 해 주세요.", until: guard.lockedUntil }, { status: 429 });

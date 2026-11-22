@@ -14,6 +14,19 @@ const env = {
   secret: () => process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
 };
 
+/** 서버가 가진 Supabase 키의 종류(값은 절대 내보내지 않는다). 공개 키가 잘못 들어가면 표를 못 읽는다 */
+export function keyKind(): "secret" | "service_role" | "publishable" | "anon" | "unknown" | "none" {
+  const k = env.secret();
+  if (!k) return "none";
+  if (k.startsWith("sb_secret_")) return "secret";
+  if (k.startsWith("sb_publishable_")) return "publishable";
+  try {
+    const role = JSON.parse(Buffer.from(k.split(".")[1] ?? "", "base64url").toString("utf8")).role;
+    if (role === "service_role" || role === "anon") return role;
+  } catch {}
+  return "unknown";
+}
+
 /** 빠진 환경 변수 이름(값은 절대 내보내지 않는다) */
 export function missingEnv() {
   const miss: string[] = [];
