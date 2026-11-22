@@ -4,7 +4,7 @@
 
 ## 어디서 돌아가나
 같은 화면 코드(`artifact/`)가 두 곳에서 돈다. 기록은 두 곳이 따로 가진다(구조는 같다).
-- **웹** https://leeseung06.kro.kr — 사용자 한 사람만 쓰는 사이트(가입·이메일 없음). Vercel이 `main` 브랜치를 빌드한다(Next.js 16, `node_modules/next/dist/docs/`를 먼저 읽을 것). 들어가기 = 비밀번호 하나(Vercel 환경 변수 `APP_PASSWORD`), 맞추면 1년짜리 httpOnly 쿠키, 8번 틀리면 10분 잠김. 기록은 Supabase 표 `daily_docs`(`supabase/schema.sql`, RLS 켜고 정책 없음 → 브라우저는 못 붙고 서버만 비밀 키로). Vercel 환경 변수: `APP_PASSWORD`, `NEXT_PUBLIC_SUPABASE_URL`(또는 `SUPABASE_URL`), `SUPABASE_SECRET_KEY`(또는 `SUPABASE_SERVICE_ROLE_KEY`), 매니저용 `OPENAI_API_KEY`(ChatGPT, 모델은 `OPENAI_MODEL`, 기본 gpt-5.4-mini) — 없고 `ANTHROPIC_API_KEY`가 있으면 Claude.
+- **웹** https://leeseung06.kro.kr — 사용자 한 사람만 쓰는 사이트(가입·이메일 없음). Vercel이 `main` 브랜치를 빌드한다(Next.js 16, `node_modules/next/dist/docs/`를 먼저 읽을 것). 들어가기 = 비밀번호 하나(Vercel 환경 변수 `APP_PASSWORD`), 맞추면 1년짜리 httpOnly 쿠키, 8번 틀리면 10분 잠김. 기록은 Supabase 표 `daily_docs`(`supabase/schema.sql`, RLS 켜고 정책 없음 → 브라우저는 못 붙고 서버만 비밀 키로). Vercel 환경 변수: `APP_PASSWORD`, `NEXT_PUBLIC_SUPABASE_URL`(또는 `SUPABASE_URL`), `SUPABASE_SECRET_KEY`(또는 `SUPABASE_SERVICE_ROLE_KEY`), 매니저용 ChatGPT 키(`OPENAI_API_KEY`, 다른 이름으로 넣어도 값이 `sk-`로 시작하면 서버가 찾는다 — `src/lib/server.ts` `openaiKey`. 모델은 `OPENAI_MODEL`, 기본 gpt-5.4-mini) — 없고 `ANTHROPIC_API_KEY`가 있으면 Claude.
 - **Claude 아티팩트**(비공개, 사용자만 열 수 있음): https://claude.ai/artifact/GAtreHbyjVG2J54DC15riv — 기록은 아티팩트 저장소(db). 직접 읽거나 고칠 때는 `ArtifactData` 도구(사용자가 부탁할 때만).
 - 아티팩트 기록을 웹으로 옮길 때: 저장소 화면 '내려받기'(또는 `ArtifactData`로 모은 같은 모양 JSON) → 웹 저장소 화면 '백업 불러오기'. 같은 경로에 다른 기록이 있으면 덮어쓰기 전 내용을 `restored/<시각>`에 남긴다.
 - 루트 `index.html`은 예전 GitHub Pages용으로 아티팩트로 넘겨주는 페이지다.

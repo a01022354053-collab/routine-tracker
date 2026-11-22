@@ -1,11 +1,11 @@
 // 매니저 대화: 브라우저(web/web.js)가 대화와 도구 목록을 보내면 AI에게 한 번 묻고 답을 돌려준다.
 // 도구 실행은 브라우저가 한다(도구가 /api/db로 기록을 읽고 쓴다). 이 서버는 API 키만 지킨다.
-// 어떤 AI를 부르나: OPENAI_API_KEY가 있으면 ChatGPT(OPENAI_MODEL, 기본 gpt-5.4-mini), 없고 ANTHROPIC_API_KEY가 있으면 Claude.
+// 어떤 AI를 부르나: ChatGPT 키(OPENAI_API_KEY, 다른 이름이어도 sk-로 시작하면 찾음)가 있으면 ChatGPT(OPENAI_MODEL, 기본 gpt-5.4-mini), 없고 ANTHROPIC_API_KEY가 있으면 Claude.
 // 브라우저와 주고받는 모양은 하나로 정해 둔다(text · image · tool_use · tool_result 블록). ChatGPT와는 여기서 바꿔 준다.
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import OpenAI from "openai";
-import { signedIn, unauthorized } from "@/lib/server";
+import { openaiKey, signedIn, unauthorized } from "@/lib/server";
 
 export const maxDuration = 120;
 
@@ -58,7 +58,7 @@ function toOpenAI(system: string | undefined, messages: Msg[]) {
 }
 
 async function askOpenAI(system: string | undefined, messages: Msg[], tools: Tool[]): Promise<Reply> {
-  const client = new OpenAI();
+  const client = new OpenAI({ apiKey: openaiKey() });
   const model = process.env.OPENAI_MODEL || "gpt-5.4-mini";
   const res = await client.chat.completions.create({
     model,
@@ -113,7 +113,7 @@ async function askClaude(system: string | undefined, messages: Msg[], tools: Too
 
 export async function POST(request: Request) {
   if (!(await signedIn())) return unauthorized();
-  const useOpenAI = !!process.env.OPENAI_API_KEY;
+  const useOpenAI = !!openaiKey();
   if (!useOpenAI && !process.env.ANTHROPIC_API_KEY) return fail(503, "매니저 열쇠(OPENAI_API_KEY)가 없어요");
 
   let body: { system?: unknown; messages?: unknown; tools?: unknown };

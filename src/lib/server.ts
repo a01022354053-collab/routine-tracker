@@ -27,6 +27,22 @@ export function keyKind(): "secret" | "service_role" | "publishable" | "anon" | 
   return "unknown";
 }
 
+/**
+ * ChatGPT(OpenAI) 키. OPENAI_API_KEY가 없으면 이름을 다르게 저장했어도 찾는다:
+ * 이름에 OPENAI·CHATGPT·GPT가 들어간 것 → 그래도 없으면 값이 sk-로 시작하는 것(Claude 키 sk-ant- 제외).
+ */
+export function openaiKey() {
+  const isKey = (v: string | undefined) => !!v && v.trim().startsWith("sk-") && !v.trim().startsWith("sk-ant-");
+  if (isKey(process.env.OPENAI_API_KEY)) return process.env.OPENAI_API_KEY!.trim();
+  const all = Object.entries(process.env);
+  const named = all.find(([name, v]) => /openai|chat_?gpt|gpt/i.test(name) && isKey(v));
+  const any = named ?? all.find(([, v]) => isKey(v));
+  return any ? any[1]!.trim() : "";
+}
+
+/** 매니저가 어느 AI를 쓰는지(키 값은 내보내지 않는다) */
+export const managerKind = () => (openaiKey() ? "chatgpt" : process.env.ANTHROPIC_API_KEY ? "claude" : "none");
+
 /** 빠진 환경 변수 이름(값은 절대 내보내지 않는다) */
 export function missingEnv() {
   const miss: string[] = [];
