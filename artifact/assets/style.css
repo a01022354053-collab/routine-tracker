@@ -1112,3 +1112,17 @@ button.plan-line:active { opacity: .7; }
 .shop-card { position: relative; background: var(--t-card-2); }
 .shop-card .shop-check { position: absolute; top: 10px; right: 10px; background: rgba(0, 0, 0, .35); }
 .shop-card .price { font-size: 16px; }
+
+/* 관리 목록 */
+.plan-line.bud b em { font-style: normal; color: var(--t-text); }
+.plan-line.bud.over b em, .plan-line.bud.over b { color: var(--t-red); }
+.plan-line.bud .emoji { font-size: 14px; margin-right: 2px; }
+.bud-row { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 8px; padding: 10px; margin-bottom: 8px; border-radius: 16px; background: var(--t-card-2); }
+.bud-row .parts { grid-column: 1 / -1; }
+.sheet.toss .bud-row .field { background: #3a3a46; padding: 10px 12px; font-size: 15px; }
+.bud-row .numfield { gap: 6px; }
+.bud-row .numfield .field { font-size: 15px; font-family: var(--font); }
+.bud-row .pchip { padding: 7px 11px; font-size: 13px; }
+.bud-row .pchip.x { margin-left: auto; color: var(--t-sub); }
+#bdAdd { width: 100%; margin-bottom: 6px; }
+#bdSum { margin: 4px 0 10px; }

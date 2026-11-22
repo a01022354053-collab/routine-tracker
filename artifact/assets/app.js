@@ -78,6 +78,7 @@ const S = {
   items: { list: [] },     // 내 물건(자주 쓰는 것)
   shopping: { list: [] },  // 사고 싶은 것
   fixed: { list: [] },     // 고정 지출(군적금은 savings에서 저절로, 나머지는 여기)
+  budget: { from: null, base: 0, items: [] },  // 관리 목록: 쓸 수 있는 돈을 나눈 칸(from 달부터)
   stocks: clone(DEFAULT_STOCKS),     // 주식
 };
 const UI = {
@@ -250,6 +251,11 @@ async function putFixed(v) {
   S.fixed = clone(v); refresh();
   return queue('fixed/main', () => DB.doc('fixed/main').set(v));
 }
+async function putBudget(v) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.budget = clone(v); refresh();
+  return queue('budget/main', () => DB.doc('budget/main').set(v));
+}
 const itemsOf = () => (S.items.list || []).filter(x => !x.removed);
 const shopOf = () => (S.shopping.list || []).filter(x => !x.removed);
 
@@ -391,26 +397,68 @@ function fixedRows() {
 }
 const isSalary = x => x.type === 'in' && /월급|급여|봉급/.test(x.title || '');
 const expectedSalary = () => S.money.salary ?? ((S.money.savings || 0) + (S.money.spend || 0));
-// 그 달의 관리 목록: 들어온 돈(월급이 아직이면 예상 월급) − 고정 지출 = 쓸 수 있는 돈, 거기서 쓴 돈을 빼면 남은 돈
+// '11월'은 11월 월급날부터 12월 월급날 전날까지(월급으로 사는 한 달)
+function cycleRange(mk) {
+  const pd = S.money.payday || 10;
+  return { start: `${mk}-${pad(pd)}`, end: shiftKey(`${monthAdd(mk, 1)}-${pad(pd)}`, -1) };
+}
+const curCycle = () => (parseKey(TODAY).getDate() >= (S.money.payday || 10) ? TODAY.slice(0, 7) : monthAdd(TODAY.slice(0, 7), -1));
+function spendBetween(a, b) {
+  const out = [];
+  for (let mk = a.slice(0, 7); mk <= b.slice(0, 7); mk = monthAdd(mk, 1)) out.push(...spendOf(mk).filter(x => x.date >= a && x.date <= b));
+  return out;
+}
+function transfersBetween(a, b) {
+  const out = [];
+  for (let mk = a.slice(0, 7); mk <= b.slice(0, 7); mk = monthAdd(mk, 1)) out.push(...transfersOf(mk).filter(x => x.date >= a && x.date <= b));
+  return out;
+}
+const BUDGET_KIND = { spend: '쓰는 돈', save: '모으는 돈', fixed: '구독·고정' };
+const budgetItems = () => (S.budget.items || []).filter(x => !x.removed);
+const budgetOn = mk => !!S.budget.from && mk >= S.budget.from && budgetItems().length > 0;
+const squash = t => String(t || '').toLowerCase().replace(/[\s·.,/]/g, '');
+// 이 지출이 관리 목록의 어느 칸인지: 직접 고른 칸, 아니면 내용에 칸 이름이 들어 있으면 그 칸
+const budgetOfTx = (x, list) => list.find(b => b.id === x.budget) || (x.budget ? null : list.find(b => (b.match || [b.name]).some(k => squash(k) && squash(x.title).includes(squash(k)))));
+const budgetOfTr = (x, list) => list.find(b => b.id === x.budget) || list.find(b => (b.match || [b.name]).some(k => squash(k) && squash(x.memo).includes(squash(k))));
+
+// 그 달의 관리: 들어온 돈(월급이 아직이면 예상 월급) − 고정 지출 = 쓸 수 있는 돈 → 관리 목록 칸들 → 남은 돈
+// 지금 달의 남은 돈은 계산이 아니라 실제 '쓸 수 있는 돈' 통장 잔액(농협 + 신한)
 function monthPlan(mk) {
-  const items = spendOf(mk);
-  const sal = items.filter(isSalary), salIn = sal.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const others = items.filter(x => x.type === 'in' && !isSalary(x)), otherIn = others.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const salary = salIn || expectedSalary();
-  const income = salary + otherIn;
-  const fixed = fixedRows(), fixedSum = fixed.reduce((s, x) => s + x.amount, 0);
-  const usable = income - fixedSum, spent = spentIn(mk), left = usable - spent;
-  const cur = TODAY.slice(0, 7), today = parseKey(TODAY).getDate();
-  const [y, m] = mk.split('-').map(Number), dim = new Date(y, m, 0).getDate();
-  const daysLeft = mk === cur ? dim - today + 1 : 0;
-  // 고정 지출이 이번 달에 나갔는지: 지난 달은 다 나감, 이번 달은 날짜가 지났으면(적금은 자동 입금 기록이 있으면) 나감
-  const status = x => {
-    if (mk < cur) return 'done';
-    if (mk > cur) return 'plan';
-    if (x.savings) return (S.savings.accounts || []).some(a => (a.deposits || []).some(d => d.month === mk)) || today >= x.day ? 'done' : 'plan';
-    return today >= (x.day || 1) ? 'done' : 'plan';
-  };
-  return { salary, salaryIn: salIn, salDate: sal[0]?.date, otherIn, others, income, fixed: fixed.map(x => ({ ...x, status: status(x) })), fixedSum, usable, spent, left, daysLeft, perDay: daysLeft ? Math.floor(Math.max(0, left) / daysLeft) : 0 };
+  const { start, end } = cycleRange(mk), cur = curCycle();
+  const when = mk < cur ? 'past' : mk > cur ? 'future' : 'now';
+  // 월급날이 주말·휴일이면 며칠 먼저 들어오니 월급은 사흘 앞당겨 본다
+  const sal = spendBetween(shiftKey(start, -3), shiftKey(end, -3)).filter(isSalary);
+  const txs = spendBetween(start, end);
+  const salIn = sal.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const others = txs.filter(x => x.type === 'in' && !isSalary(x)), otherIn = others.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const salary = salIn || expectedSalary(), income = salary + otherIn;
+  const fixedDate = d => (d >= (S.money.payday || 10) ? `${mk}-${pad(d)}` : `${monthAdd(mk, 1)}-${pad(d)}`);
+  const fixed = fixedRows().map(x => ({ ...x, status: fixedDate(x.day || 1) <= TODAY ? 'done' : 'plan' }));
+  const fixedSum = fixed.reduce((s, x) => s + x.amount, 0);
+  const usable = income - fixedSum;
+  const outs = txs.filter(x => x.type !== 'in'), spent = outs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  // 관리 목록: 처음 정할 때의 쓸 수 있는 돈(base)과 이번 달이 다르면, 구독·고정 칸은 그대로 두고 나머지 칸을 같은 비율로 맞춘다
+  let budget = null;
+  if (budgetOn(mk)) {
+    const list = budgetItems(), fixedPart = list.filter(b => b.kind === 'fixed').reduce((s, b) => s + b.amount, 0);
+    const base = S.budget.base || list.reduce((s, b) => s + b.amount, 0);
+    const k = base - fixedPart > 0 ? Math.max(0, (usable - fixedPart) / (base - fixedPart)) : 1;
+    const trs = transfersBetween(start, end);
+    const rows = list.map(b => {
+      const plan = b.kind === 'fixed' || Math.abs(k - 1) < 0.001 ? b.amount : Math.round((b.amount * k) / 1000) * 1000;
+      const used = outs.filter(x => budgetOfTx(x, list)?.id === b.id).reduce((s, x) => s + x.amount, 0)
+        + (b.kind === 'save' ? trs.filter(x => budgetOfTr(x, list)?.id === b.id).reduce((s, x) => s + x.amount, 0) : 0);
+      return { ...b, plan, used };
+    });
+    const planned = rows.reduce((s, b) => s + b.plan, 0);
+    budget = { rows, k, planned, free: usable - planned };
+  }
+  const useBanks = banksIn('use'), known = useBanks.some(b => S.money.balances[b.id] != null);
+  const bankLeft = useBanks.reduce((s, b) => s + (Number(S.money.balances[b.id]) || 0), 0);
+  const left = when === 'now' && known ? bankLeft : when === 'future' ? usable : usable - spent;
+  const daysLeft = when === 'now' ? Math.round((parseKey(end) - parseKey(TODAY)) / 86400000) + 1 : 0;
+  return { mk, start, end, when, salary, salaryIn: salIn, salDate: sal[0]?.date, otherIn, others, income, fixed, fixedSum, usable, spent,
+    left, leftFromBanks: when === 'now' && known, bankNames: useBanks.map(b => b.name).join(' + '), budget, daysLeft, perDay: daysLeft ? Math.floor(Math.max(0, left) / daysLeft) : 0 };
 }
 
 async function connect() {
@@ -507,6 +555,12 @@ async function connect() {
     const v = { list: [], ...(d.data() || {}) };
     if (same(v, S.shopping)) return;
     S.shopping = v;
+    refresh();
+  }, () => {});
+  DB.doc('budget/main').onSnapshot(d => {
+    const v = { from: null, base: 0, items: [], ...(d.data() || {}) };
+    if (same(v, S.budget)) return;
+    S.budget = v;
     refresh();
   }, () => {});
   DB.doc('fixed/main').onSnapshot(d => {
@@ -919,8 +973,7 @@ function viewMoney() {
   const mk = monthKey(UI.my, UI.mm), isNow = mk === TODAY.slice(0, 7);
   const items = spendOf(mk), out = items.filter(x => x.type !== 'in');
   const plan = monthPlan(mk);
-  const spent = spentIn(mk), income = incomeIn(mk), budget = Math.max(0, plan.usable);
-  const left = budget - spent, pct = budget ? Math.min(100, Math.round((spent / budget) * 100)) : 0;
+  const spent = spentIn(mk), income = incomeIn(mk);
 
   // 지난달 같은 기간과 비교 (지난 달을 보고 있으면 그 전 달 전체와)
   const prev = new Date(UI.my, UI.mm - 1, 1), pk = monthKey(prev.getFullYear(), prev.getMonth());
@@ -978,22 +1031,28 @@ function viewMoney() {
 
         <section class="t-card anim plan-card" style="--i:2">
           <div class="t-month">${monthNav(UI.my, UI.mm, 'money')}</div>
-          <div class="t-head"><b>${UI.mm + 1}월 관리</b><button class="t-mini" data-plan>예상 월급</button></div>
-          <span class="t-label">${isNow ? '이번 달 남은 돈' : `${UI.mm + 1}월에 남은 돈`}</span>
+          <div class="t-head"><b>${UI.mm + 1}월 관리</b><span class="num">${dotDate(plan.start)}~${dotDate(plan.end)}</span><button class="t-mini" data-budget>관리 목록</button></div>
+          <span class="t-label">${plan.when === 'future' ? `${UI.mm + 1}월에 쓸 수 있는 돈` : plan.when === 'now' ? '남은 돈' : `${UI.mm + 1}월에 남은 돈`}</span>
           <div class="t-big num${plan.left < 0 ? ' bad' : ''}">${plan.left < 0 ? '-' : ''}${won(Math.abs(plan.left))}</div>
-          <div class="t-bar ${plan.left < 0 ? 'over' : ''}"><i style="width:${plan.usable > 0 ? Math.min(100, Math.round((plan.spent / plan.usable) * 100)) : 100}%"></i></div>
-          <p class="t-sub">${plan.left < 0 ? `쓸 수 있는 돈보다 <b class="num bad">${won(-plan.left)}</b> 더 썼어요` : isNow && plan.daysLeft ? `남은 ${plan.daysLeft}일 동안 하루 <b class="num">${won(plan.perDay)}</b>씩 쓸 수 있어요` : `쓸 수 있는 돈 ${won(plan.usable)} 중 ${won(plan.spent)} 썼어요`}</p>
+          ${plan.when !== 'future' ? `<div class="t-bar ${plan.left < 0 ? 'over' : ''}"><i style="width:${plan.usable > 0 ? Math.max(0, Math.min(100, Math.round(((plan.usable - plan.left) / plan.usable) * 100))) : 100}%"></i></div>` : ''}
+          ${plan.when === 'now' ? `<p class="t-sub">${plan.leftFromBanks ? `${plan.bankNames} 잔액 · ` : ''}월급날까지 ${plan.daysLeft}일, 하루 <b class="num">${won(plan.perDay)}</b>씩 쓸 수 있어요</p>` : ''}
           <div class="plan-list">
             <div class="plan-line head"><span>들어온 돈</span><b class="num in">+${won(plan.income)}</b></div>
-            <div class="plan-line sub"><span>월급 <small>${plan.salaryIn ? `${Number(plan.salDate.slice(8))}일 들어왔어요` : '예상'}</small></span><b class="num">${won(plan.salary)}</b></div>
-            ${plan.others.map(x => `<div class="plan-line sub"><span>${esc(x.title)} <small>${Number(x.date.slice(8))}일</small></span><b class="num">${won(x.amount)}</b></div>`).join('')}
+            <div class="plan-line sub"><span>월급 <small>${plan.salaryIn ? `${dotDate(plan.salDate)} 들어왔어요` : '예상'}</small></span><b class="num">${won(plan.salary)}</b></div>
+            ${plan.others.map(x => `<div class="plan-line sub"><span>${esc(x.title)} <small>${dotDate(x.date)}</small></span><b class="num">${won(x.amount)}</b></div>`).join('')}
             <button class="plan-line head link" data-go-fixed><span>고정 지출 ${ICON.next}</span><b class="num">-${won(plan.fixedSum)}</b></button>
             ${plan.fixed.map(x => `<button class="plan-line sub fx ${x.status}" data-fixed="${esc(x.id)}">
-              <span><span class="emoji" aria-hidden="true">${esc(x.emoji || '📦')}</span> ${esc(x.name)} <small>${x.status === 'done' ? `${x.day}일 나갔어요` : `${x.day}일 예정`}</small></span><b class="num">${won(x.amount)}</b></button>`).join('')}
-            <button class="plan-line sub add" data-fixed-add><span>+ 고정 지출 추가</span></button>
+              <span><span class="emoji" aria-hidden="true">${esc(x.emoji || '📦')}</span> ${esc(x.name)} <small>${x.day}일 ${x.status === 'done' ? '나갔어요' : '예정'}</small></span><b class="num">${won(x.amount)}</b></button>`).join('')}
             <div class="plan-line head sumline"><span>쓸 수 있는 돈</span><b class="num">${won(plan.usable)}</b></div>
-            <div class="plan-line sub"><span>쓴 돈</span><b class="num">${plan.spent ? '-' : ''}${won(plan.spent)}</b></div>
-            <div class="plan-line head sumline"><span>남은 돈</span><b class="num ${plan.left < 0 ? 'bad' : ''}">${plan.left < 0 ? '-' : ''}${won(Math.abs(plan.left))}</b></div>
+            ${plan.budget ? `
+              <button class="plan-line head link" data-budget><span>관리 목록 ${ICON.next}${Math.abs(plan.budget.k - 1) >= 0.001 ? ' <small>월급에 맞춤</small>' : ''}</span><b class="num">${won(plan.budget.planned)}</b></button>
+              ${plan.budget.rows.map(b => `<div class="plan-line sub bud ${b.used > b.plan ? 'over' : ''}">
+                <span><span class="emoji" aria-hidden="true">${esc(b.emoji || '📦')}</span> ${esc(b.name)} <small>${BUDGET_KIND[b.kind] || ''}</small></span>
+                <b class="num">${b.used ? `<em>${won(b.used)}</em> / ` : ''}${won(b.plan)}</b></div>`).join('')}
+              ${plan.budget.free ? `<div class="plan-line sub"><span>${plan.budget.free > 0 ? '칸에 안 넣은 돈' : '칸이 쓸 수 있는 돈보다 많아요'}</span><b class="num ${plan.budget.free < 0 ? 'bad' : ''}">${won(Math.abs(plan.budget.free))}</b></div>` : ''}`
+              : S.budget.from && mk < S.budget.from ? `<button class="plan-line sub add" data-budget><span>관리 목록은 ${Number(S.budget.from.slice(5))}월부터 ${ICON.next}</span></button>` : `<button class="plan-line sub add" data-budget><span>+ 관리 목록 만들기</span></button>`}
+            ${plan.when !== 'future' ? `<div class="plan-line sub"><span>기록한 지출</span><b class="num">${plan.spent ? '-' : ''}${won(plan.spent)}</b></div>` : ''}
+            <div class="plan-line head sumline"><span>남은 돈 ${plan.leftFromBanks ? `<small>${plan.bankNames} 잔액</small>` : plan.when === 'future' ? '' : '<small>기록으로 계산</small>'}</span><b class="num ${plan.left < 0 ? 'bad' : ''}">${plan.left < 0 ? '-' : ''}${won(Math.abs(plan.left))}</b></div>
           </div>
         </section>
 
@@ -1092,8 +1151,6 @@ function viewMoney() {
           <span class="t-label">${UI.mm + 1}월 소비</span>
           <div class="t-big num"${wonAttr(spent)}</div>
           ${compare ? `<p class="t-say">${compare}</p>` : ''}
-          ${budget ? `<div class="t-bar ${left < 0 ? 'over' : ''}"><i style="width:${pct}%"></i></div>
-            <p class="t-sub">${left >= 0 ? `쓸 수 있는 돈 ${won(budget)} 중 <b class="num">${won(left)}</b> 남았어요` : `쓸 수 있는 돈 ${won(budget)}을 <b class="num bad">${won(-left)}</b> 넘었어요`}</p>` : ''}
           ${out.length ? catsHTML(catsOf(out), spent) : ''}
           ${income ? `<div class="t-kv"><span>${UI.mm + 1}월 들어온 돈</span><b class="num in">+${won(income)}</b></div>` : ''}
         </section>
@@ -1383,7 +1440,8 @@ function balanceAllSheet() {
 function expenseSheet(mk, id, presetBank, presetMethod) {
   const cur = id ? (S.spend[mk]?.items || []).find(x => x.id === id) : null;
   const banks = [...BANKS.map(b => ({ id: b.id, name: b.name })), { id: 'cash', name: '현금' }];
-  const f = { type: cur?.type === 'in' ? 'in' : 'out', bank: cur?.bank || presetBank || '', cat: cur?.cat || '', method: cur?.method || presetMethod || '', apply: cur ? !!cur.applied : true };
+  const f = { type: cur?.type === 'in' ? 'in' : 'out', bank: cur?.bank || presetBank || '', cat: cur?.cat || '', method: cur?.method || presetMethod || '', apply: cur ? !!cur.applied : true, budget: cur?.budget || '' };
+  const buds = budgetItems().filter(b => b.kind !== 'save');
   if (f.method === 'card') f.bank = 'shinhan';
   const realBank = () => !!f.bank && f.bank !== 'cash';
   const defDate = cur?.date || (mk === TODAY.slice(0, 7) ? TODAY : `${mk}-01`);
@@ -1394,6 +1452,7 @@ function expenseSheet(mk, id, presetBank, presetMethod) {
     <div class="sh-sec"><span class="label">내용</span><input class="field" id="exTitle" maxlength="40" placeholder="예: PX 간식" value="${esc(cur?.title || '')}"></div>
     <div class="sh-sec" id="exCatBox" ${f.type === 'in' ? 'hidden' : ''}><span class="label">분류</span><div class="parts" id="exCat">${CATS.map(c =>
       `<button class="pchip" data-c="${c.id}" aria-pressed="${c.id === f.cat}"><span class="emoji" aria-hidden="true">${c.emoji}</span> ${c.name}</button>`).join('')}</div></div>
+    ${buds.length ? `<div class="sh-sec" id="exBudBox" ${f.type === 'in' ? 'hidden' : ''}><span class="label">관리 목록 칸</span><div class="parts" id="exBud">${buds.map(b => `<button class="pchip" data-bd="${esc(b.id)}" aria-pressed="${b.id === f.budget}"><span class="emoji" aria-hidden="true">${esc(b.emoji || '📦')}</span> ${esc(b.name)}</button>`).join('')}</div></div>` : ''}
     <div class="sh-sec"><span class="label">날짜</span><input class="field" id="exDate" type="date" value="${defDate}" max="${TODAY}"></div>
     <div class="sh-sec" id="exMethodBox" ${f.type === 'in' ? 'hidden' : ''}><span class="label">결제</span><div class="parts" id="exMethod">${[['card', '💳 나라사랑카드'], ['transfer', '계좌'], ['cash', '현금']].map(([m, n]) =>
       `<button class="pchip" data-m="${m}" aria-pressed="${m === f.method}">${n}</button>`).join('')}</div></div>
@@ -1416,9 +1475,11 @@ function expenseSheet(mk, id, presetBank, presetMethod) {
       f.type = b.dataset.t; press($('#exType'), 'data-t', f.type);
       $('#exCatBox').hidden = f.type === 'in';
       $('#exMethodBox').hidden = f.type === 'in';
+      if ($('#exBudBox')) $('#exBudBox').hidden = f.type === 'in';
       $('#exIcon').textContent = f.type === 'in' ? '💵' : '💸';
       applyUI();
     });
+    $('#exBud')?.addEventListener('click', e => { const b = e.target.closest('[data-bd]'); if (!b) return; f.budget = f.budget === b.dataset.bd ? '' : b.dataset.bd; press($('#exBud'), 'data-bd', f.budget); });
     $('#exCat').addEventListener('click', e => { const b = e.target.closest('[data-c]'); if (!b) return; f.cat = f.cat === b.dataset.c ? '' : b.dataset.c; press($('#exCat'), 'data-c', f.cat); });
     $('#exBank').addEventListener('click', e => { const b = e.target.closest('[data-b]'); if (!b) return; f.bank = f.bank === b.dataset.b ? '' : b.dataset.b; press($('#exBank'), 'data-b', f.bank); applyUI(); });
     $('#exMethod').addEventListener('click', e => {
@@ -1445,7 +1506,7 @@ function expenseSheet(mk, id, presetBank, presetMethod) {
       const nk = date.slice(0, 7);
       const fill = x => {
         Object.assign(x, { amount, title, date });
-        if (f.type === 'in') { x.type = 'in'; delete x.cat; delete x.method; } else { delete x.type; if (f.cat) x.cat = f.cat; else delete x.cat; if (f.method) x.method = f.method; else delete x.method; }
+        if (f.type === 'in') { x.type = 'in'; delete x.cat; delete x.method; delete x.budget; } else { delete x.type; if (f.cat) x.cat = f.cat; else delete x.cat; if (f.method) x.method = f.method; else delete x.method; if (f.budget) x.budget = f.budget; else delete x.budget; }
         if (f.bank) x.bank = f.bank; else delete x.bank;
         return x;
       };
@@ -1489,7 +1550,7 @@ async function backup(btn) {
   btn.textContent = '모으는 중…';
   try {
     const out = { app: '일상 매니저', exportedAt: new Date().toISOString() };
-    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'fixed', 'chatlog', 'log', 'chat', 'restored']) {
+    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'fixed', 'budget', 'chatlog', 'log', 'chat', 'restored']) {
       const snap = await DB.collection(col).get();
       out[col] = Object.fromEntries(snap.docs.map(d => [d.id, d.data()]));
     }
@@ -1504,7 +1565,7 @@ async function backup(btn) {
 }
 
 function viewFixed() {
-  const plan = monthPlan(TODAY.slice(0, 7)), rows = plan.fixed;
+  const plan = monthPlan(curCycle()), rows = plan.fixed;
   const pct = plan.income ? Math.round((plan.fixedSum / plan.income) * 100) : 0;
   return `
     <div class="view-title anim" style="--i:0">${ICON.star}<h1>고정 지출</h1></div>
@@ -1518,7 +1579,7 @@ function viewFixed() {
         <div class="t-btns"><button class="t-btn primary" data-fixed-add>고정 지출 추가</button><button class="t-btn" data-plan>예상 월급</button></div>
       </section>
       <section class="t-card anim" style="--i:2">
-        <div class="t-head"><b>${NOW.getMonth() + 1}월</b><span class="num">${rows.filter(x => x.status === 'done').length}/${rows.length} 나갔어요</span></div>
+        <div class="t-head"><b>${Number(plan.mk.slice(5))}월</b><span class="num">${dotDate(plan.start)}~${dotDate(plan.end)} · ${rows.filter(x => x.status === 'done').length}/${rows.length} 나갔어요</span></div>
         ${rows.length ? rows.map(x => `<button class="t-row fx-row ${x.status}" data-fixed="${esc(x.id)}">
             <span class="ico"><span class="emoji" aria-hidden="true">${esc(x.emoji || '📦')}</span></span>
             <span class="txt"><b>${esc(x.name)}</b><small>매달 ${x.day}일${x.bank ? ` · ${bankName(x.bank)}` : ''}${x.savings ? ' · 자동 입금' : ''}</small></span>
@@ -1571,6 +1632,66 @@ function fixedSheet(id) {
       const fx = clone(S.fixed);
       Object.assign(fx.list.find(i => i.id === id), { removed: true, removedAt: new Date().toISOString() });
       try { await putFixed(fx); logAct(`고정 지출 뺌 · ${x.name}`); toast('목록에서 뺐어요 (기록은 남아요)'); closeSheet(); } catch (e) { saveFail(); }
+    });
+  }, 'toss');
+}
+
+// 관리 목록: 쓸 수 있는 돈을 칸으로 나눈다. 월급이 바뀌면 구독·고정 칸 말고 나머지 칸이 같은 비율로 바뀐다
+const BUDGET_EMOJI = { spend: '💳', save: '🐷', fixed: '🎵' };
+function budgetSheet() {
+  const cur = curCycle(), next = monthAdd(cur, 1);
+  const rows = budgetItems().map(b => ({ ...b }));
+  if (!rows.length) rows.push({ id: newId(), name: '', amount: 0, kind: 'spend' });
+  let from = S.budget.from || next;
+  const usableNow = expectedSalary() - fixedRows().reduce((s, x) => s + x.amount, 0);
+  const rowHTML = (b, i) => `<div class="bud-row" data-i="${i}">
+      <input class="field" data-k="name" maxlength="16" placeholder="이름 (예: PX)" value="${esc(b.name)}">
+      <span class="numfield"><input class="field" data-k="amount" inputmode="numeric" placeholder="0" value="${b.amount || ''}"><span>원</span></span>
+      <div class="parts">${Object.entries(BUDGET_KIND).map(([k, n]) => `<button class="pchip" data-kind="${k}" aria-pressed="${b.kind === k}">${n}</button>`).join('')}
+        <button class="pchip x" data-del aria-label="이 칸 빼기">빼기</button></div>
+    </div>`;
+  openSheet(`<div class="tr-head"><h3>관리 목록</h3><p>쓸 수 있는 돈을 칸으로 나눠요. 월급이 바뀌면 구독·고정 말고 나머지 칸이 같은 비율로 바뀌어요</p></div>
+    <div class="sh-sec"><span class="label">언제부터</span><div class="parts" id="bdFrom">${[[cur, `이번 달(${Number(cur.slice(5))}월)부터`], [next, `다음 달(${Number(next.slice(5))}월)부터`]].map(([m, n]) => `<button class="pchip" data-m="${m}" aria-pressed="${m === from}">${n}</button>`).join('')}</div></div>
+    <div id="bdRows">${rows.map(rowHTML).join('')}</div>
+    <button class="t-btn" id="bdAdd">+ 칸 추가</button>
+    <p class="t-sub" id="bdSum"></p>
+    <button class="btn" id="bdSave">저장</button>`, body => {
+    const $ = q => body.querySelector(q);
+    const sync = () => {
+      body.querySelectorAll('.bud-row').forEach(r => {
+        const b = rows[r.dataset.i];
+        b.name = r.querySelector('[data-k="name"]').value.trim();
+        b.amount = Number(r.querySelector('[data-k="amount"]').value) || 0;
+      });
+      const live = rows.filter(b => !b.gone), sum = live.reduce((s, b) => s + b.amount, 0), d = usableNow - sum;
+      $('#bdSum').innerHTML = `합계 <b class="num">${won(sum)}</b> · 쓸 수 있는 돈 ${won(usableNow)}${d ? ` · ${d > 0 ? `${won(d)} 남아요` : `<b class="num bad">${won(-d)}</b> 넘어요`}` : ''}`;
+    };
+    const paint = () => { $('#bdRows').innerHTML = rows.map((b, i) => (b.gone ? '' : rowHTML(b, i))).join(''); sync(); };
+    sync();
+    $('#bdRows').addEventListener('input', e => { if (e.target.dataset.k === 'amount') e.target.value = e.target.value.replace(/[^\d]/g, ''); sync(); });
+    $('#bdRows').addEventListener('click', e => {
+      const r = e.target.closest('.bud-row'); if (!r) return;
+      const b = rows[r.dataset.i];
+      const kb = e.target.closest('[data-kind]');
+      if (kb) { sync(); b.kind = kb.dataset.kind; r.querySelectorAll('[data-kind]').forEach(c => c.setAttribute('aria-pressed', c.dataset.kind === b.kind)); }
+      if (e.target.closest('[data-del]')) { sync(); b.gone = true; paint(); }
+    });
+    $('#bdAdd').addEventListener('click', () => { sync(); rows.push({ id: newId(), name: '', amount: 0, kind: 'spend' }); paint(); body.querySelector('.bud-row:last-child [data-k="name"]')?.focus(); });
+    $('#bdFrom').addEventListener('click', e => { const b = e.target.closest('[data-m]'); if (!b) return; from = b.dataset.m; body.querySelectorAll('#bdFrom [data-m]').forEach(c => c.setAttribute('aria-pressed', c.dataset.m === from)); });
+    $('#bdSave').addEventListener('click', async () => {
+      sync();
+      const now = new Date().toISOString(), bd = clone(S.budget), old = bd.items || [];
+      for (const b of rows) {
+        if (!b.name && !b.amount) continue;
+        const t = old.find(x => x.id === b.id);
+        if (b.gone) { if (t && !t.removed) Object.assign(t, { removed: true, removedAt: now }); continue; }
+        if (!b.name) { toast('칸 이름을 넣어 주세요'); return; }
+        const v = { name: b.name, amount: b.amount, kind: b.kind || 'spend', emoji: t?.emoji || BUDGET_EMOJI[b.kind] || '📦' };
+        if (t) { if (t.name !== v.name || t.amount !== v.amount || t.kind !== v.kind) { t.history = [...(t.history || []), { name: t.name, amount: t.amount, kind: t.kind, at: now }]; Object.assign(t, v); } }
+        else old.push({ id: b.id, ...v, at: now });
+      }
+      bd.items = old; bd.from = from; bd.base = usableNow; bd.at = now;
+      try { await putBudget(bd); logAct(`관리 목록 · ${Number(from.slice(5))}월부터 ${budgetItems().map(b => `${b.name} ${manwon(b.amount)}`).join(', ')}`); toast('저장했어요'); closeSheet(); } catch (e) { saveFail(); }
     });
   }, 'toss');
 }
@@ -2362,6 +2483,7 @@ $view.addEventListener('click', e => {
   const sp = e.target.closest('[data-shop]');
   if (sp) { if (suppressClick) { suppressClick = false; return; } shopSheet(sp.dataset.shop); return; }
   if (e.target.closest('[data-plan]')) { planSheet(); return; }
+  if (e.target.closest('[data-budget]')) { budgetSheet(); return; }
   if (e.target.closest('[data-fixed-add]')) { fixedSheet(null); return; }
   if (e.target.closest('[data-go-fixed]')) { location.hash = '#fixed'; return; }
   const fxr = e.target.closest('[data-fixed]');
@@ -2451,7 +2573,10 @@ function instructions() {
 - 사고 싶은 것은 add_shopping, 자주 쓰는 물건과 가격·가진 개수는 add_item으로 넣어.
 - 돈을 썼다고 하면 add_expense로 날짜·금액·내용을 기록해. 카드로 긁었으면 method '나라사랑카드'(신한 통장 돈이라 신한 잔액에서 저절로 빠짐). 통장을 말하면 bank에 넣어.
 - 말로 알려 준 지출·입금은 apply_to_balance true(그 통장 잔액에도 반영). 은행 앱 캡처에서 읽은 거래는 잔액에 이미 들어 있으니 false.
-- 매달 나가는 돈(통신비, 구독 같은)은 set_fixed로 고정 지출에 넣어. 군적금은 이미 들어 있어.
+- 매달 나가는 돈(통신비 같은)은 set_fixed로 고정 지출에 넣어. 군적금은 이미 들어 있어.
+- 쓸 수 있는 돈을 칸으로 나누는 '관리 목록'(예: PX 10만, 옷 7.2만, 출타 저축 20만)을 정하거나 바꾸라고 하면 set_budget. '다음 달'이면 from에 다음 달을 넣어.
+- 지출이 관리 목록의 어느 칸인지 알면 add_expense의 budget에 칸 이름을 넣어. 저축 칸으로 통장끼리 옮겼으면 transfer의 memo에 칸 이름.
+- '남은 돈이 X원이야', '○○에 X원 있어'처럼 잔액을 말하면 그 통장에 set_balance로 맞춰. 이번 달 남은 돈 = 쓸 수 있는 돈 통장 잔액 합계라서 통장이 애매하면 물어봐. 잔액을 맞추면 돈 관리 화면 숫자가 모두 그에 맞게 바뀌어.
 - 시간이 걸리는 할 일은 minutes(분)에, 개수 같은 양은 amount에 넣어. 사이트 개발은 kind "dev", 운동은 kind "workout", 감사한 점 3개는 kind "thanks".
 - 감사한 점은 그날 자정 전까지만 적을 수 있고, 지나면 탈락이야.
 - 앱 화면이나 기능을 고치는 일은 네 일이 아니야. 그런 요청이면 코딩은 대화 밖 개발 세션에서 한다고 알려줘.
@@ -2462,7 +2587,11 @@ function instructions() {
 오늘 운동 부위: ${partOf(TODAY)}, 내일 운동 부위: ${partOf(tk)}
 주간 운동 루틴: ${split}
 돈: 월급날 매달 ${S.money.payday}일, 예상 월급 ${won(expectedSalary())}, 잔액 ${bal}
-이번 달 관리: 들어온 돈 ${won(monthPlan(mk).income)} − 고정 지출 ${won(monthPlan(mk).fixedSum)} = 쓸 수 있는 돈 ${won(monthPlan(mk).usable)}, 쓴 돈 ${won(monthPlan(mk).spent)}, 남은 돈 ${won(monthPlan(mk).left)}
+${(() => {
+  const p = monthPlan(curCycle());
+  return `이번 달(${p.start}~${p.end}, 월급날부터 다음 월급날 전날까지) 관리: 들어온 돈 ${won(p.income)}${p.salaryIn ? '' : '(월급은 예상)'} − 고정 지출 ${won(p.fixedSum)} = 쓸 수 있는 돈 ${won(p.usable)}, 기록한 지출 ${won(p.spent)}, 남은 돈 ${won(p.left)}${p.leftFromBanks ? ` (= ${p.bankNames} 실제 잔액)` : ''}, 월급날까지 ${p.daysLeft}일`;
+})()}
+관리 목록${S.budget.from ? `(${S.budget.from}부터)` : ''}: ${JSON.stringify(budgetItems().map(b => ({ name: b.name, amount: b.amount, kind: BUDGET_KIND[b.kind] })))}
 고정 지출: ${JSON.stringify(fixedRows().map(x => ({ id: x.id, name: x.name, amount: x.amount, day: x.day })))}
 통장 역할: 농협=월급 통장, 신한=나라사랑 통장(나라사랑카드와 같은 돈), 카카오뱅크=따로 모으는 돈, 토스=아직 안 정함. ${['use', 'save', ''].map(g => `${GROUP_NAME[g]} = ${banksIn(g).map(b => b.name).join(' + ') || '없음'}`).join(', ')}.
 군적금: ${savPlan().accts.map(a => `${a.short} ${won(a.bal)}(매달 ${manwon(a.monthly)})`).join(', ') || '없음'}, 만기 예상 ${won(savPlan().payout)} (매달 ${S.savings.payday}일 자동 입금, 앱이 알아서 채움)
@@ -2631,11 +2760,13 @@ function makeTools(before, acts) {
         category: { type: 'string', enum: CATS.map(c => c.name) },
         method: { type: 'string', enum: ['나라사랑카드', '계좌이체', '현금'], description: '나라사랑카드면 신한 카드 사용으로 기록' },
         apply_to_balance: { type: 'boolean', description: 'true면 그 통장 잔액에서도 뺀다(말로 알려 준 지출). 은행 앱 캡처에서 읽은 거래는 false' },
+        budget: { type: 'string', description: '관리 목록 칸 이름(있으면)' },
       }, required: ['date', 'amount', 'title'] },
       execute: async input => {
         const d = needDate(input.date), amt = Math.round(Number(input.amount));
         if (!(amt > 0)) throw new Error('amount는 0보다 큰 원 단위 숫자예요');
         const title = String(input.title || '').trim().slice(0, 40) || '지출';
+        const bud = input.budget ? budgetItems().find(b => squash(b.name) === squash(input.budget)) : null;
         const bank = BANKS.find(x => x.name === input.bank || x.id === input.bank)?.id || (input.bank === '현금' ? 'cash' : undefined);
         const mk = d.slice(0, 7);
         keep(`spend/${mk}`, S.spend[mk]?.items);
@@ -2647,6 +2778,7 @@ function makeTools(before, acts) {
         if (method) item.method = method;
         if (method === 'card') item.bank = 'shinhan';
         if (method === 'cash') item.bank = 'cash';
+        if (bud) item.budget = bud.id;
         if (input.apply_to_balance !== false && item.bank && item.bank !== 'cash') {
           keep('money/main', S.money);
           const applied = await applyToBalance(item.bank, -amt);
@@ -2783,7 +2915,35 @@ function makeTools(before, acts) {
         if (input.salary != null) money.salary = Math.max(0, Math.round(Number(input.salary)));
         await putMoney(money);
         acts.push('월급 계획 수정');
-        return { ok: true, plan: monthPlan(TODAY.slice(0, 7)) };
+        return { ok: true, plan: monthPlan(curCycle()) };
+      },
+    },
+    {
+      name: 'set_budget',
+      description: 'Sets the 관리 목록: how the monthly spendable money (쓸 수 있는 돈) is split into slots, e.g. PX 100000, 옷 72000, 출타 저축 200000. kind: 쓰는 돈 (spending), 모으는 돈 (saving), 구독·고정 (subscription, not scaled). from: first month YYYY-MM it applies to. Replaces the whole list (old slots stay in history).',
+      inputSchema: { type: 'object', properties: {
+        from: { type: 'string', description: 'YYYY-MM (월급날 기준 한 달의 시작 달)' },
+        items: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, amount: { type: 'number' }, kind: { type: 'string', enum: Object.values(BUDGET_KIND) } }, required: ['name', 'amount'] } },
+      }, required: ['items'] },
+      execute: async input => {
+        const list = (input.items || []).filter(x => String(x.name || '').trim() && Number(x.amount) >= 0);
+        if (!list.length) throw new Error('items가 비었어요');
+        const from = /^\d{4}-\d{2}$/.test(String(input.from || '')) ? String(input.from) : monthAdd(curCycle(), 1);
+        keep('budget/main', S.budget);
+        const now = new Date().toISOString(), bd = clone(S.budget), old = bd.items || [];
+        const kindOf = k => Object.entries(BUDGET_KIND).find(([, n]) => n === k)?.[0] || (BUDGET_KIND[k] ? k : 'spend');
+        const keepIds = new Set();
+        for (const x of list) {
+          const v = { name: String(x.name).trim().slice(0, 16), amount: Math.round(Number(x.amount)), kind: kindOf(x.kind) };
+          const t = old.find(o => !o.removed && squash(o.name) === squash(v.name));
+          if (t) { keepIds.add(t.id); if (t.amount !== v.amount || t.kind !== v.kind) { t.history = [...(t.history || []), { name: t.name, amount: t.amount, kind: t.kind, at: now }]; Object.assign(t, v); } }
+          else { const id = newId(); keepIds.add(id); old.push({ id, ...v, emoji: BUDGET_EMOJI[v.kind] || '📦', at: now }); }
+        }
+        old.forEach(o => { if (!o.removed && !keepIds.has(o.id)) Object.assign(o, { removed: true, removedAt: now }); });
+        bd.items = old; bd.from = from; bd.base = expectedSalary() - fixedRows().reduce((s2, x) => s2 + x.amount, 0); bd.at = now;
+        await putBudget(bd);
+        acts.push(`관리 목록 ${Number(from.slice(5))}월부터: ${budgetItems().map(b => `${b.name} ${manwon(b.amount)}`).join(', ')}`);
+        return { ok: true, from, base: bd.base, total: budgetItems().reduce((s2, b) => s2 + b.amount, 0) };
       },
     },
     {
@@ -2817,7 +2977,7 @@ function makeTools(before, acts) {
         if (bank) t.bank = bank;
         await putFixed(fx);
         acts.push(`고정 지출 ${name} ${won(t.amount)} (매달 ${t.day}일)`);
-        return { ok: true, plan: monthPlan(TODAY.slice(0, 7)) };
+        return { ok: true, plan: monthPlan(curCycle()) };
       },
     },
   ];
@@ -2838,6 +2998,7 @@ async function undoTurn(at) {
       else if (col === 'shopping') await putShopping(val || { list: [] });
       else if (col === 'items') await putItems(val || { list: [] });
       else if (col === 'fixed') await putFixed(val || { list: [] });
+      else if (col === 'budget') await putBudget(val || { from: null, base: 0, items: [] });
     }
     delete UI.undo[at];
     logAct('매니저가 한 일을 되돌림');
