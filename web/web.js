@@ -8,6 +8,8 @@
 (() => {
   if (window.claude) return;
   window.__webMode = true;
+  // 홈 화면 앱: 서비스 워커(public/sw.js) — 늘 새로 받고, 연결이 끊겼을 때만 마지막 화면
+  if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 
   const clone = v => (v == null ? v : JSON.parse(JSON.stringify(v)));
   const STAR = '<svg class="login-star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>';

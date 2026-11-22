@@ -68,6 +68,7 @@ writeFileSync(at('index.html'), `<!doctype html>
 <meta name="apple-mobile-web-app-title" content="일상 매니저">
 <meta name="robots" content="noindex">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/icon-192.png" sizes="192x192" type="image/png">
 <link rel="apple-touch-icon" href="/icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
 ${title.trim()}
