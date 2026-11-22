@@ -89,7 +89,7 @@ function toOpenAI(system: string | undefined, messages: Msg[], gemini: boolean) 
 
 async function askCompat(ai: Compat, system: string | undefined, messages: Msg[], tools: Tool[]): Promise<Reply> {
   // 도구를 주고받는 중이면 앞 차례에 답한 모델을 먼저 쓴다(thought signature는 그 모델 것이라서)
-  const prev = [...messages].reverse().flatMap((m) => (Array.isArray(m.content) ? m.content : [])).find((b) => b.type === "tool_use" && typeof b.via === "string")?.via as string | undefined;
+  const prev = [...messages].reverse().flatMap((m) => (Array.isArray(m.content) ? m.content : [])).map((b) => (b.type === "tool_use" ? (b as { via?: unknown }).via : undefined)).find((v): v is string => typeof v === "string");
   const models = prev && ai.models.includes(prev) ? [prev, ...ai.models.filter((m) => m !== prev)] : ai.models;
   let last: unknown;
   for (const [i, model] of models.entries()) {
