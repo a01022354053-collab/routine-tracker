@@ -2563,7 +2563,7 @@ function instructions() {
   const bal = BANKS.map(b => `${b.name} ${S.money.balances[b.id] == null ? '미입력' : won(S.money.balances[b.id])}`).join(', ');
   const mk = TODAY.slice(0, 7);
   const recentSpend = spendOf(mk).slice(-15).map(x => ({ id: x.id, type: x.type === 'in' ? '입금' : '지출', date: x.date, title: x.title, amount: x.amount, bank: bankName(x.bank) || undefined }));
-  return `너는 '일상 매니저' 앱 안에 있는 매니저야. 사용자가 넣으라는 곳에 기록을 넣고 고치는 일만 해.
+  return `너는 '일상 매니저' 앱 안에 있는 매니저야. 사용자가 말하는 대로 앱 안의 기록을 넣고, 고치고, 숨겨.
 규칙:
 - 한국어로 짧고 친근하게 답해. 무엇을 어디에 넣었는지 한 줄로 알려줘.
 - 기록을 바꿀 때는 반드시 도구를 써. 도구가 성공하지 않았으면 했다고 말하지 마.
@@ -2571,6 +2571,8 @@ function instructions() {
 - '오늘', '내일', '토요일' 같은 말은 아래 날짜를 기준으로 YYYY-MM-DD로 바꿔.
 - 내 통장끼리 돈을 옮겼다고 하면 transfer로 기록해(소비가 아님).
 - 사고 싶은 것은 add_shopping, 자주 쓰는 물건과 가격·가진 개수는 add_item으로 넣어.
+- 사고 싶은 것에 있는 걸 '샀어'라고 하면 update_shopping으로 bought true. 얼마를 어느 통장·카드로 냈는지 말했으면 add_expense도 하고, 금액을 모르면 지출은 넣지 말고 물어봐(0원 지출은 넣지 마).
+- 내 물건을 다 썼거나 개수가 바뀌었다고 하면 update_item(다 떨어졌으면 ran_out true).
 - 돈을 썼다고 하면 add_expense로 날짜·금액·내용을 기록해. 카드로 긁었으면 method '나라사랑카드'(신한 통장 돈이라 신한 잔액에서 저절로 빠짐). 통장을 말하면 bank에 넣어.
 - 말로 알려 준 지출·입금은 apply_to_balance true(그 통장 잔액에도 반영). 은행 앱 캡처에서 읽은 거래는 잔액에 이미 들어 있으니 false.
 - 매달 나가는 돈(통신비 같은)은 set_fixed로 고정 지출에 넣어. 군적금은 이미 들어 있어.
@@ -2579,7 +2581,8 @@ function instructions() {
 - '남은 돈이 X원이야', '○○에 X원 있어'처럼 잔액을 말하면 그 통장에 set_balance로 맞춰. 이번 달 남은 돈 = 쓸 수 있는 돈 통장 잔액 합계라서 통장이 애매하면 물어봐. 잔액을 맞추면 돈 관리 화면 숫자가 모두 그에 맞게 바뀌어.
 - 시간이 걸리는 할 일은 minutes(분)에, 개수 같은 양은 amount에 넣어. 사이트 개발은 kind "dev", 운동은 kind "workout", 감사한 점 3개는 kind "thanks".
 - 감사한 점은 그날 자정 전까지만 적을 수 있고, 지나면 탈락이야.
-- 앱 화면이나 기능을 고치는 일은 네 일이 아니야. 그런 요청이면 코딩은 대화 밖 개발 세션에서 한다고 알려줘.
+- 앱에 보이는 기록은 전부 도구로 바꿀 수 있어: 할 일·감사한 점·운동, 잔액·지출·입금·이체(취소 포함), 통장 묶음, 군적금, 주식, 관리 목록, 고정 지출, 예상 월급, 내 물건(개수·가격·다 떨어짐), 사고 싶은 것(샀어요 포함). 무엇을 고칠지 모르면 get_data로 먼저 찾아봐. '못 한다'고 하기 전에 맞는 도구가 있는지 꼭 확인해.
+- 할 수 없는 건 앱 화면이나 기능을 새로 만들거나 바꾸는 일(코딩)뿐이야. 그런 요청이면 대화 밖 개발 세션에서 한다고 알려줘.
 
 지금: ${TODAY} ${DAY[NOW.getDay()]}요일 ${hm}
 오늘(${TODAY}) 할 일: ${JSON.stringify(todosOf(TODAY).map(slim))}
@@ -2597,6 +2600,8 @@ ${(() => {
 군적금: ${savPlan().accts.map(a => `${a.short} ${won(a.bal)}(매달 ${manwon(a.monthly)})`).join(', ') || '없음'}, 만기 예상 ${won(savPlan().payout)} (매달 ${S.savings.payday}일 자동 입금, 앱이 알아서 채움)
 주식: ${stockSum().rows.map(r => `${r.name} ${r.qty}주 평균 ${won(r.avg)} 현재가 ${r.price != null ? won(r.price) : '미입력'}`).join(', ') || '없음'} (현재가를 말하면 set_stock)
 이번 달(${mk}) 쓴 돈 합계 ${won(spentIn(mk))}, 최근 내역: ${JSON.stringify(recentSpend)}
+내 물건: ${JSON.stringify(itemsOf().map(x => [x.name, x.qty != null ? `${x.qty}${x.unit || '개'}` : '', x.price]))}
+사고 싶은 것: ${JSON.stringify(shopOf().filter(x => !x.done).map(x => [x.name, x.price ?? '미정']))}
 지출은 add_expense(분류: ${CATS.map(c => c.name).join(', ')}), 들어온 돈은 add_income으로 기록해. 기록은 지우지 않고 숨기기만 해.
 사진이 오면: 은행·카드 앱 화면이면 보이는 통장 잔액은 set_balance로, 거래는 add_expense/add_income으로 넣어. 최근 내역에 이미 있는 거래(같은 날짜·금액)는 다시 넣지 마. 화면이 흐리거나 확실하지 않은 숫자는 넣지 말고 물어봐. 넣은 것을 한 줄씩 알려줘.`;
 }
@@ -2791,12 +2796,19 @@ function makeTools(before, acts) {
     },
     {
       name: 'set_stock',
-      description: 'Updates a stock holding by name: current price (won per share), quantity, or average buy price. Creates the holding if it does not exist (needs qty and avg).',
-      inputSchema: { type: 'object', properties: { name: { type: 'string' }, price: { type: 'number' }, qty: { type: 'number' }, avg: { type: 'number' } }, required: ['name'] },
+      description: 'Updates a stock holding by name: current price (won per share), quantity, average buy price, or 6-digit code. Creates the holding if it does not exist (needs qty and avg). remove: true hides it (sold all).',
+      inputSchema: { type: 'object', properties: { name: { type: 'string' }, price: { type: 'number' }, qty: { type: 'number' }, avg: { type: 'number' }, code: { type: 'string' }, remove: { type: 'boolean' } }, required: ['name'] },
       execute: async input => {
         keep('stocks/main', S.stocks);
         const st = clone(S.stocks), now = new Date().toISOString();
-        let h = (st.holdings || []).find(x => !x.removed && x.name === String(input.name).trim());
+        let h = (st.holdings || []).find(x => !x.removed && squash(x.name) === squash(input.name));
+        if (input.remove) {
+          if (!h) throw new Error(`${input.name} 종목이 없어요`);
+          Object.assign(h, { removed: true, removedAt: now });
+          await putStocks(st);
+          acts.push(`주식 뺌: ${h.name}`);
+          return { ok: true };
+        }
         if (!h) {
           if (!(input.qty > 0 && input.avg > 0)) throw new Error('새 종목은 qty와 avg가 필요해요');
           h = { id: newId(), name: String(input.name).trim().slice(0, 20), qty: Math.round(input.qty), avg: Math.round(input.avg), price: null, priceAt: null, history: [], at: now };
@@ -2805,6 +2817,7 @@ function makeTools(before, acts) {
         if (input.price > 0) { h.price = Math.round(input.price); h.priceAt = now; h.history = [...(h.history || []), { at: now, price: h.price }]; }
         if (input.qty > 0 && input.qty !== h.qty) { h.changes = [...(h.changes || []), { at: now, qty: h.qty, avg: h.avg }]; h.qty = Math.round(input.qty); }
         if (input.avg > 0 && input.avg !== h.avg) { h.avg = Math.round(input.avg); }
+        if (/^\d{6}$/.test(String(input.code || ''))) h.code = String(input.code);
         await putStocks(st);
         acts.push(`주식 ${h.name}${input.price > 0 ? ` 현재가 ${won(h.price)}` : ''}`);
         const r = stockSum().rows.find(x => x.id === h.id);
@@ -2923,23 +2936,26 @@ function makeTools(before, acts) {
       description: 'Sets the 관리 목록: how the monthly spendable money (쓸 수 있는 돈) is split into slots, e.g. PX 100000, 옷 72000, 출타 저축 200000. kind: 쓰는 돈 (spending), 모으는 돈 (saving), 구독·고정 (subscription, not scaled). from: first month YYYY-MM it applies to. Replaces the whole list (old slots stay in history).',
       inputSchema: { type: 'object', properties: {
         from: { type: 'string', description: 'YYYY-MM (월급날 기준 한 달의 시작 달)' },
-        items: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, amount: { type: 'number' }, kind: { type: 'string', enum: Object.values(BUDGET_KIND) } }, required: ['name', 'amount'] } },
+        items: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, amount: { type: 'number' }, kind: { type: 'string', enum: Object.values(BUDGET_KIND) }, remove: { type: 'boolean' } }, required: ['name'] } },
+        keep_others: { type: 'boolean', description: 'true면 말한 칸만 바꾸거나 더하고(remove: true면 그 칸만 빼고) 나머지 칸은 그대로 둔다' },
       }, required: ['items'] },
       execute: async input => {
-        const list = (input.items || []).filter(x => String(x.name || '').trim() && Number(x.amount) >= 0);
+        const list = (input.items || []).filter(x => String(x.name || '').trim() && (x.remove || Number(x.amount) >= 0));
         if (!list.length) throw new Error('items가 비었어요');
-        const from = /^\d{4}-\d{2}$/.test(String(input.from || '')) ? String(input.from) : monthAdd(curCycle(), 1);
+        const from = /^\d{4}-\d{2}$/.test(String(input.from || '')) ? String(input.from) : S.budget.from && input.keep_others ? S.budget.from : monthAdd(curCycle(), 1);
         keep('budget/main', S.budget);
         const now = new Date().toISOString(), bd = clone(S.budget), old = bd.items || [];
         const kindOf = k => Object.entries(BUDGET_KIND).find(([, n]) => n === k)?.[0] || (BUDGET_KIND[k] ? k : 'spend');
         const keepIds = new Set();
         for (const x of list) {
-          const v = { name: String(x.name).trim().slice(0, 16), amount: Math.round(Number(x.amount)), kind: kindOf(x.kind) };
-          const t = old.find(o => !o.removed && squash(o.name) === squash(v.name));
+          const t0 = old.find(o => !o.removed && squash(o.name) === squash(x.name));
+          if (x.remove) { if (t0) Object.assign(t0, { removed: true, removedAt: now }); continue; }
+          const v = { name: String(x.name).trim().slice(0, 16), amount: Math.round(Number(x.amount) || 0), kind: x.kind ? kindOf(x.kind) : t0?.kind || 'spend' };
+          const t = t0;
           if (t) { keepIds.add(t.id); if (t.amount !== v.amount || t.kind !== v.kind) { t.history = [...(t.history || []), { name: t.name, amount: t.amount, kind: t.kind, at: now }]; Object.assign(t, v); } }
           else { const id = newId(); keepIds.add(id); old.push({ id, ...v, emoji: BUDGET_EMOJI[v.kind] || '📦', at: now }); }
         }
-        old.forEach(o => { if (!o.removed && !keepIds.has(o.id)) Object.assign(o, { removed: true, removedAt: now }); });
+        if (!input.keep_others) old.forEach(o => { if (!o.removed && !keepIds.has(o.id)) Object.assign(o, { removed: true, removedAt: now }); });
         bd.items = old; bd.from = from; bd.base = expectedSalary() - fixedRows().reduce((s2, x) => s2 + x.amount, 0); bd.at = now;
         await putBudget(bd);
         acts.push(`관리 목록 ${Number(from.slice(5))}월부터: ${budgetItems().map(b => `${b.name} ${manwon(b.amount)}`).join(', ')}`);
@@ -2980,6 +2996,197 @@ function makeTools(before, acts) {
         return { ok: true, plan: monthPlan(curCycle()) };
       },
     },
+    {
+      name: 'get_data',
+      description: 'Reads records shown in the app so you can find what to change (ids, names, amounts): 내 물건, 사고 싶은 것, 지출 내역, 이체, 군적금, 주식, 관리 목록, 고정 지출, 잔액 기록, 돈 설정. month (YYYY-MM) for 지출 내역·이체·잔액 기록.',
+      inputSchema: { type: 'object', properties: {
+        kind: { type: 'string', enum: ['내 물건', '사고 싶은 것', '지출 내역', '이체', '군적금', '주식', '관리 목록', '고정 지출', '잔액 기록', '돈 설정'] },
+        month: { type: 'string', description: 'YYYY-MM' },
+      }, required: ['kind'] },
+      execute: async input => {
+        const mk = /^\d{4}-\d{2}$/.test(String(input.month || '')) ? String(input.month) : TODAY.slice(0, 7);
+        switch (input.kind) {
+          case '내 물건': return itemsOf().map(x => ({ id: x.id, name: x.name, sub: x.sub, price: x.price, qty: x.qty, unit: x.unit }));
+          case '사고 싶은 것': return shopOf().map(x => ({ id: x.id, name: x.name, option: x.option, price: x.price, qty: x.qty, group: x.group, bought: !!x.done }));
+          case '지출 내역': return spendOf(mk).map(x => ({ id: x.id, date: x.date, type: x.type === 'in' ? '입금' : '지출', title: x.title, amount: x.amount, bank: bankName(x.bank) || undefined, category: x.cat ? catOf(x.cat).name : undefined, card: x.method === 'card' || undefined, budget: budgetItems().find(b => b.id === x.budget)?.name, inBalance: !!x.applied }));
+          case '이체': return transfersOf(mk).map(x => ({ id: x.id, date: x.date, from: bankName(x.from), to: bankName(x.to), amount: x.amount, memo: x.memo }));
+          case '군적금': { const sv = savPlan(); return { accounts: sv.accts.map(a => ({ name: a.name, short: a.short, balance: a.bal, monthly: a.monthly })), lastMonth: S.savings.lastMonth, matchPercent: Math.round((S.savings.match ?? 1) * 100), payout: sv.payout }; }
+          case '주식': return stockSum().rows.map(r => ({ name: r.name, code: r.code, qty: r.qty, avg: r.avg, price: r.price, pnl: r.pnl }));
+          case '관리 목록': return { from: S.budget.from, items: budgetItems().map(b => ({ name: b.name, amount: b.amount, kind: BUDGET_KIND[b.kind] })), thisMonth: monthPlan(curCycle()).budget };
+          case '고정 지출': return fixedRows().map(x => ({ id: x.id, name: x.name, amount: x.amount, day: x.day, bank: bankName(x.bank) || undefined, savings: x.savings || undefined }));
+          case '잔액 기록': return (S.balhist[mk]?.items || []).map(x => ({ at: x.at, bank: bankName(x.bank), amount: x.amount }));
+          case '돈 설정': return { payday: S.money.payday, expectedSalary: expectedSalary(), balances: Object.fromEntries(BANKS.map(b => [b.name, S.money.balances[b.id]])), groups: Object.fromEntries(BANKS.map(b => [b.name, GROUP_NAME[groupOf(b.id)]])) };
+          default: throw new Error('kind를 다시 골라 주세요');
+        }
+      },
+    },
+    {
+      name: 'update_expense',
+      description: 'Changes a recorded expense or income by id (get_data 지출 내역 to find it): amount, title, date, category, bank, budget slot name, apply_to_balance. Bank balance changes are redone to match. Old values stay in history.',
+      inputSchema: { type: 'object', properties: {
+        id: { type: 'string' }, month: { type: 'string', description: 'YYYY-MM where it is recorded now' },
+        amount: { type: 'number' }, title: { type: 'string' }, date: { type: 'string' },
+        category: { type: 'string', enum: CATS.map(c => c.name) }, bank: { type: 'string', enum: [...BANKS.map(b => b.name), '현금'] },
+        budget: { type: 'string' }, apply_to_balance: { type: 'boolean' },
+      }, required: ['id'] },
+      execute: async input => {
+        const id = String(input.id);
+        const mk = /^\d{4}-\d{2}$/.test(String(input.month || '')) && (S.spend[input.month]?.items || []).some(i => i.id === id) ? String(input.month)
+          : Object.keys(S.spend).find(m => (S.spend[m]?.items || []).some(i => i.id === id && !i.removed));
+        if (!mk) throw new Error(`id ${id} 내역이 없어요. get_data 지출 내역으로 찾아 주세요`);
+        keep(`spend/${mk}`, S.spend[mk]?.items);
+        keep('money/main', S.money);
+        const items = clone(S.spend[mk].items), x = items.find(i => i.id === id);
+        const prev = { amount: x.amount, title: x.title, date: x.date, bank: x.bank, cat: x.cat, type: x.type, at: x.editedAt || x.at };
+        if (x.applied) await revertApplied(x);
+        if (input.amount > 0) x.amount = Math.round(Number(input.amount));
+        if (input.title) x.title = String(input.title).trim().slice(0, 40);
+        if (input.date) x.date = needDate(input.date);
+        const cat = CATS.find(c => c.name === input.category || c.id === input.category);
+        if (cat && x.type !== 'in') x.cat = cat.id;
+        if (input.bank) x.bank = input.bank === '현금' ? 'cash' : BANKS.find(b => b.name === input.bank || b.id === input.bank)?.id || x.bank;
+        if (input.budget != null && x.type !== 'in') { const b = budgetItems().find(v => squash(v.name) === squash(input.budget)); if (b) x.budget = b.id; else delete x.budget; }
+        const wantApply = input.apply_to_balance ?? !!x.applied;
+        delete x.applied;
+        if (wantApply && x.bank && x.bank !== 'cash') { const a = await applyToBalance(x.bank, x.type === 'in' ? x.amount : -x.amount); if (a) x.applied = a; }
+        x.editedAt = new Date().toISOString(); x.history = [...(x.history || []), prev];
+        const nk = x.date.slice(0, 7);
+        if (nk === mk) await putSpend(mk, items);
+        else {
+          keep(`spend/${nk}`, S.spend[nk]?.items);
+          const moved = { ...clone(x), id: newId(), at: new Date().toISOString() };
+          Object.assign(x, { removed: true, removedAt: new Date().toISOString(), movedTo: nk });
+          delete x.applied;
+          await putSpend(mk, items);
+          await putSpend(nk, [...clone(S.spend[nk]?.items || []), moved]);
+        }
+        acts.push(`내역 고침: ${prev.title} ${won(prev.amount)} → ${x.title} ${won(x.amount)}`);
+        return { ok: true, balance: x.bank && S.money.balances[x.bank] != null ? S.money.balances[x.bank] : undefined };
+      },
+    },
+    {
+      name: 'cancel_transfer',
+      description: 'Cancels a transfer between the user\'s own accounts by id (get_data 이체 to find it). Balances go back; the record stays as removed.',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' }, month: { type: 'string', description: 'YYYY-MM' } }, required: ['id'] },
+      execute: async input => {
+        const id = String(input.id);
+        const mk = Object.keys(S.transfers).find(m => (S.transfers[m]?.items || []).some(i => i.id === id && !i.removed));
+        if (!mk) throw new Error(`id ${id} 이체가 없어요`);
+        keep('money/main', S.money);
+        keep(`transfers/${mk}`, S.transfers[mk]?.items);
+        const x = S.transfers[mk].items.find(i => i.id === id);
+        await cancelTransfer(mk, id);
+        acts.push(`이체 취소: ${bankName(x.from)} → ${bankName(x.to)} ${won(x.amount)}`);
+        return { ok: true };
+      },
+    },
+    {
+      name: 'update_item',
+      description: 'Changes an item in 내 물건 by name (or id): new_name, sub, price per one, qty (how many the user has), unit (개/통/장/병). ran_out: true marks it used up and adds it to 사고 싶은 것. remove: true hides it.',
+      inputSchema: { type: 'object', properties: {
+        name: { type: 'string' }, id: { type: 'string' }, new_name: { type: 'string' }, sub: { type: 'string' }, price: { type: 'number' }, qty: { type: 'number' },
+        unit: { type: 'string', enum: ['개', '통', '장', '병'] }, ran_out: { type: 'boolean' }, remove: { type: 'boolean' },
+      } },
+      execute: async input => {
+        const list = itemsOf();
+        const hit = list.filter(x => x.id === input.id || (input.name && (squash(x.name) === squash(input.name) || squash(x.sub).includes(squash(input.name)))));
+        if (hit.length !== 1) throw new Error(hit.length ? `여러 개가 맞아요: ${hit.map(x => `${x.name}(${x.id})`).join(', ')}. id로 골라 주세요` : `${input.name || input.id} 물건이 없어요. get_data 내 물건으로 찾아 주세요`);
+        keep('items/main', S.items);
+        const it = clone(S.items), t = it.list.find(x => x.id === hit[0].id), now = new Date().toISOString();
+        t.history = [...(t.history || []), { name: t.name, sub: t.sub, price: t.price, qty: t.qty, unit: t.unit, at: now }];
+        if (input.remove) Object.assign(t, { removed: true, removedAt: now });
+        else {
+          if (input.new_name) t.name = String(input.new_name).slice(0, 30);
+          if (input.sub != null) t.sub = String(input.sub).slice(0, 40);
+          if (input.price != null) t.price = Math.max(0, Math.round(Number(input.price) || 0));
+          if (input.qty != null) t.qty = Math.max(0, Math.round(Number(input.qty) || 0));
+          if (input.unit) t.unit = input.unit;
+          if (input.ran_out) t.qty = 0;
+        }
+        await putItems(it);
+        if (input.ran_out && !shopOf().some(s => s.fromItem === t.id && !s.done)) {
+          keep('shopping/main', S.shopping);
+          const sh = clone(S.shopping);
+          sh.list = [...(sh.list || []), { id: newId(), name: t.name, option: t.sub || '', price: t.price || 0, qty: 1, group: '생활용품', fromItem: t.id, ...(t.image ? { image: t.image } : {}), done: false, at: now }];
+          await putShopping(sh);
+        }
+        acts.push(input.remove ? `내 물건 뺌: ${t.name}` : input.ran_out ? `${t.name} 다 떨어짐 → 사고 싶은 것` : `내 물건 고침: ${t.name}`);
+        return { ok: true };
+      },
+    },
+    {
+      name: 'update_shopping',
+      description: 'Changes something in 사고 싶은 것 by name (or id): new_name, option, price (price_unknown: true for 가격 미정), qty, group, bought (true = 샀어요, false = 아직), remove: true hides it.',
+      inputSchema: { type: 'object', properties: {
+        name: { type: 'string' }, id: { type: 'string' }, new_name: { type: 'string' }, option: { type: 'string' }, price: { type: 'number' }, price_unknown: { type: 'boolean' },
+        qty: { type: 'number' }, group: { type: 'string' }, bought: { type: 'boolean' }, remove: { type: 'boolean' },
+      } },
+      execute: async input => {
+        const list = shopOf();
+        const hit = list.filter(x => x.id === input.id || (input.name && squash(x.name).includes(squash(input.name))));
+        if (hit.length !== 1) throw new Error(hit.length ? `여러 개가 맞아요: ${hit.map(x => `${x.name}${x.option ? ` ${x.option}` : ''}(${x.id})`).join(', ')}. id로 골라 주세요` : `${input.name || input.id}이(가) 사고 싶은 것에 없어요`);
+        keep('shopping/main', S.shopping);
+        const sh = clone(S.shopping), t = sh.list.find(x => x.id === hit[0].id), now = new Date().toISOString();
+        t.history = [...(t.history || []), { name: t.name, option: t.option, price: t.price, qty: t.qty, group: t.group, done: t.done, at: now }];
+        if (input.remove) Object.assign(t, { removed: true, removedAt: now });
+        else {
+          if (input.new_name) t.name = String(input.new_name).slice(0, 60);
+          if (input.option != null) t.option = String(input.option).slice(0, 40);
+          if (input.price_unknown) t.price = null; else if (input.price != null) t.price = Math.max(0, Math.round(Number(input.price) || 0));
+          if (input.qty > 0) t.qty = Math.round(Number(input.qty));
+          if (input.group) t.group = String(input.group).slice(0, 20);
+          if (input.bought === true) { t.done = true; t.doneAt = now; } else if (input.bought === false) { t.done = false; delete t.doneAt; }
+        }
+        await putShopping(sh);
+        acts.push(input.remove ? `사고 싶은 것 뺌: ${t.name}` : input.bought ? `샀어요: ${t.name}` : `사고 싶은 것 고침: ${t.name}`);
+        return { ok: true };
+      },
+    },
+    {
+      name: 'set_savings',
+      description: 'Changes 군적금 settings: account (IBK or 신한, by name or short name) with balance (현재 모인 돈, resets the base) and/or monthly; last_month (YYYY-MM, 마지막 입금 달); match_percent (정부 매칭 %).',
+      inputSchema: { type: 'object', properties: {
+        account: { type: 'string' }, balance: { type: 'number' }, monthly: { type: 'number' }, last_month: { type: 'string' }, match_percent: { type: 'number' },
+      } },
+      execute: async input => {
+        keep('savings/main', S.savings);
+        const sv = clone(S.savings), lines = [], now = new Date().toISOString();
+        if (input.account) {
+          const a = (sv.accounts || []).find(x => squash(x.name).includes(squash(input.account)) || squash(x.short) === squash(input.account));
+          if (!a) throw new Error(`군적금 계좌는 ${(sv.accounts || []).map(x => x.short).join(', ')} 중 하나예요`);
+          if (input.balance != null) {
+            a.history = [...(a.history || []), { initial: a.initial, asOf: a.asOf, deposits: a.deposits, at: now }];
+            a.initial = Math.max(0, Math.round(Number(input.balance))); a.asOf = TODAY; a.deposits = [];
+            lines.push(`${a.short} 잔액 ${won(a.initial)}`);
+          }
+          if (input.monthly > 0) { a.monthly = Math.round(Number(input.monthly)); lines.push(`${a.short} 매달 ${won(a.monthly)}`); }
+        }
+        if (/^\d{4}-\d{2}$/.test(String(input.last_month || ''))) { sv.lastMonth = String(input.last_month); delete sv.lastMonthGuess; lines.push(`마지막 입금 ${sv.lastMonth}`); }
+        if (input.match_percent != null) { sv.match = Math.max(0, Number(input.match_percent)) / 100; lines.push(`매칭 ${Math.round(sv.match * 100)}%`); }
+        if (!lines.length) throw new Error('바꿀 값을 넣어 주세요');
+        await putSavings(sv);
+        acts.push(`군적금 ${lines.join(', ')}`);
+        return { ok: true, payout: savPlan().payout };
+      },
+    },
+    {
+      name: 'set_account_group',
+      description: 'Moves a bank account into a group on the money screen: 쓸 수 있는 돈, 따로 모으는 돈, or 그 밖의 통장 (e.g. decide what 토스 is for).',
+      inputSchema: { type: 'object', properties: {
+        bank: { type: 'string', enum: BANKS.map(b => b.name) }, group: { type: 'string', enum: Object.values(GROUP_NAME) },
+      }, required: ['bank', 'group'] },
+      execute: async input => {
+        const b = BANKS.find(x => x.name === input.bank || x.id === input.bank);
+        const g = Object.entries(GROUP_NAME).find(([, n]) => n === input.group)?.[0];
+        if (!b || g == null) throw new Error('통장과 묶음을 다시 골라 주세요');
+        keep('money/main', S.money);
+        const money = clone(S.money);
+        money.groups = { ...(money.groups || {}), [b.id]: g };
+        await putMoney(money);
+        acts.push(`${b.name} → ${GROUP_NAME[g]}`);
+        return { ok: true };
+      },
+    },
   ];
 }
 
@@ -2999,6 +3206,8 @@ async function undoTurn(at) {
       else if (col === 'items') await putItems(val || { list: [] });
       else if (col === 'fixed') await putFixed(val || { list: [] });
       else if (col === 'budget') await putBudget(val || { from: null, base: 0, items: [] });
+      else if (col === 'savings') await putSavings(val || clone(DEFAULT_SAVINGS));
+      else if (col === 'stocks') await putStocks(val || clone(DEFAULT_STOCKS));
     }
     delete UI.undo[at];
     logAct('매니저가 한 일을 되돌림');

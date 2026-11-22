@@ -30,6 +30,7 @@
 - 주식 시세(아티팩트): 아티팩트는 바깥에 접속할 수 없어서, 예약 작업 '일상 매니저 주식 시세 갱신'(trig_01Kr3EFGi9EueK6q3P2RtCWL, 평일 KST 9:47·11:47·13:47·15:47)이 새 세션에서 시세를 받아 `ArtifactData`로 `stocks/main`의 holdings[].price·priceAt·quote·history를 갱신한다. 손으로 할 때는 `bash tools/stock-quote.sh 005930`. 토스증권과 같은 거래소 가격으로, 정규장과 넥스트레이드 시간외 중 더 최근 체결가를 쓴다(토스증권 내부 API는 로그인 브라우저 전용이라 못 씀). history는 지우지 않는다.
 - 이미지: `artifact/private/card-narasarang.png`(나라사랑카드 견본 디자인), `bank-{nh,kakao,shinhan}.png`(은행 아이콘, 동그랗게 표시), `item-*.png`(상품 사진). 개인 정보가 없는 공개 이미지라 웹 배포를 위해 저장소에 넣었다. 사용자 개인 사진이나 개인 정보가 담긴 이미지는 저장소에 넣지 않는다.
 - 매니저: 오른쪽 아래 동그라미(✦)를 누르면 지금 화면 위로 대화창이 열린다(휴대폰은 아래에서 올라오고, 컴퓨터는 오른쪽 아래에 뜬다). 메뉴의 '매니저와 대화'도 같은 창을 연다.
+- 매니저 도구(`makeTools`, 25개): 사이트에 보이는 기록은 전부 말로 바꿀 수 있어야 한다. 새 화면·기록을 만들면 그걸 바꾸는 도구도 같이 만들고, 매니저 지시문(`instructions()`)에 무엇을 할 수 있는지 적는다. 지금: 할 일(get_day·add/update/remove_todo·set_thanks·set_workout·set_weekly_split), 돈(set_balance·add_expense·add_income·update_expense·remove_expense·transfer·cancel_transfer·set_account_group·set_money_plan·set_fixed·set_budget·set_savings·set_stock), 물건(add_item·update_item·add_shopping·update_shopping), 찾아보기(get_data). 매니저가 바꾼 것은 대화창에서 되돌리기(`undoTurn`) — 새 컬렉션을 만들면 거기에도 넣는다. 못 하는 건 코딩뿐.
 - 디자인: 밤하늘 게임 월드. 남색 배경, 팝 네온, 유리 패널, 숫자는 Unbounded, 한글은 Pretendard, 이모지는 Tossface. 군더더기 문구를 넣지 않는다.
 
 ## 저장소(db) 구조 — 규칙: 소유자만 읽고 쓴다
