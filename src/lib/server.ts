@@ -40,8 +40,21 @@ export function openaiKey() {
   return any ? any[1]!.trim() : "";
 }
 
-/** 매니저가 어느 AI를 쓰는지(키 값은 내보내지 않는다) */
-export const managerKind = () => (openaiKey() ? "chatgpt" : process.env.ANTHROPIC_API_KEY ? "claude" : "none");
+/**
+ * 구글 Gemini 키(무료 구간 있음). GEMINI_API_KEY가 없으면 이름에 GEMINI·GOOGLE이 들어간 것,
+ * 그래도 없으면 값이 AIza로 시작하는 것을 쓴다.
+ */
+export function geminiKey() {
+  const isKey = (v: string | undefined) => !!v && v.trim().startsWith("AIza");
+  if (isKey(process.env.GEMINI_API_KEY)) return process.env.GEMINI_API_KEY!.trim();
+  const all = Object.entries(process.env);
+  const named = all.find(([name, v]) => /gemini|google/i.test(name) && isKey(v));
+  const any = named ?? all.find(([, v]) => isKey(v));
+  return any ? any[1]!.trim() : "";
+}
+
+/** 매니저가 어느 AI를 쓰는지(키 값은 내보내지 않는다). Gemini → ChatGPT → Claude 순서로 있는 것 */
+export const managerKind = () => (geminiKey() ? "gemini" : openaiKey() ? "chatgpt" : process.env.ANTHROPIC_API_KEY ? "claude" : "none");
 
 /** 빠진 환경 변수 이름(값은 절대 내보내지 않는다) */
 export function missingEnv() {

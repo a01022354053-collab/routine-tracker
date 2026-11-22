@@ -1,18 +1,20 @@
 // 매니저 대화: 브라우저(web/web.js)가 대화와 도구 목록을 보내면 AI에게 한 번 묻고 답을 돌려준다.
 // 도구 실행은 브라우저가 한다(도구가 /api/db로 기록을 읽고 쓴다). 이 서버는 API 키만 지킨다.
-// 어떤 AI를 부르나: ChatGPT 키(OPENAI_API_KEY, 다른 이름이어도 sk-로 시작하면 찾음)가 있으면 ChatGPT(OPENAI_MODEL, 기본 gpt-5.4-mini), 없고 ANTHROPIC_API_KEY가 있으면 Claude.
-// 브라우저와 주고받는 모양은 하나로 정해 둔다(text · image · tool_use · tool_result 블록). ChatGPT와는 여기서 바꿔 준다.
+// 어떤 AI를 부르나(있는 키 순서): Gemini(GEMINI_API_KEY 또는 AIza… 값, 모델 GEMINI_MODEL 기본 gemini-3.8-flash, 무료 구간)
+//   → ChatGPT(OPENAI_API_KEY 또는 sk-… 값, 모델 OPENAI_MODEL 기본 gpt-5.4-mini) → Claude(ANTHROPIC_API_KEY).
+// Gemini는 구글의 OpenAI 호환 주소로 같은 openai SDK를 쓴다.
+// 브라우저와 주고받는 모양은 하나로 정해 둔다(text · image · tool_use · tool_result 블록). ChatGPT·Gemini와는 여기서 바꿔 준다.
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import OpenAI from "openai";
-import { openaiKey, signedIn, unauthorized } from "@/lib/server";
+import { geminiKey, openaiKey, signedIn, unauthorized } from "@/lib/server";
 
 export const maxDuration = 120;
 
 type Block =
   | { type: "text"; text: string }
   | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
-  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | { type: "tool_use"; id: string; name: string; input: unknown; extra?: unknown }
   | { type: "tool_result"; tool_use_id: string; content: unknown; is_error?: boolean }
   | { type: string; [k: string]: unknown };
 type Msg = { role: "user" | "assistant"; content: string | Block[] };
@@ -22,10 +24,21 @@ type Reply = { content: Block[]; stop_reason: string; model: string };
 const fail = (status: number, error: string) => Response.json({ error }, { status });
 const asText = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v ?? ""));
 
-/* ---------- ChatGPT ---------- */
-function toOpenAI(system: string | undefined, messages: Msg[]) {
+/* ---------- ChatGPT · Gemini(OpenAI 호환) ---------- */
+type Compat = { client: OpenAI; model: string; gemini: boolean };
+const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/";
+
+function compat(): Compat | null {
+  const g = geminiKey();
+  if (g) return { client: new OpenAI({ apiKey: g, baseURL: process.env.GEMINI_BASE_URL || GEMINI_BASE }), model: process.env.GEMINI_MODEL || "gemini-3.8-flash", gemini: true };
+  const o = openaiKey();
+  if (o) return { client: new OpenAI({ apiKey: o }), model: process.env.OPENAI_MODEL || "gpt-5.4-mini", gemini: false };
+  return null;
+}
+
+function toOpenAI(system: string | undefined, messages: Msg[], gemini: boolean) {
   const out: OpenAI.Chat.ChatCompletionMessageParam[] = [];
-  if (system) out.push({ role: "developer", content: system });
+  if (system) out.push(gemini ? { role: "system", content: system } : { role: "developer", content: system });
   for (const m of messages) {
     if (typeof m.content === "string") {
       out.push(m.role === "user" ? { role: "user", content: m.content } : { role: "assistant", content: m.content });
@@ -35,8 +48,14 @@ function toOpenAI(system: string | undefined, messages: Msg[]) {
       const text = m.content.filter((b): b is Extract<Block, { type: "text" }> => b.type === "text").map((b) => b.text).join("\n\n");
       const calls = m.content
         .filter((b): b is Extract<Block, { type: "tool_use" }> => b.type === "tool_use")
-        .map((b) => ({ id: b.id, type: "function" as const, function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) } }));
-      out.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });
+        .map((b) => ({
+          id: b.id,
+          type: "function" as const,
+          function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+          // Gemini 3는 도구 호출에 붙여 준 thought signature를 다음 요청에 그대로 돌려받아야 한다
+          ...(b.extra ? { extra_content: b.extra } : {}),
+        }));
+      out.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) } as OpenAI.Chat.ChatCompletionAssistantMessageParam);
       continue;
     }
     // 사용자 차례: 도구 결과는 tool 메시지로, 사진·글은 user 메시지로
@@ -57,13 +76,11 @@ function toOpenAI(system: string | undefined, messages: Msg[]) {
   return out;
 }
 
-async function askOpenAI(system: string | undefined, messages: Msg[], tools: Tool[]): Promise<Reply> {
-  const client = new OpenAI({ apiKey: openaiKey() });
-  const model = process.env.OPENAI_MODEL || "gpt-5.4-mini";
+async function askCompat({ client, model, gemini }: Compat, system: string | undefined, messages: Msg[], tools: Tool[]): Promise<Reply> {
   const res = await client.chat.completions.create({
     model,
-    messages: toOpenAI(system, messages),
-    max_completion_tokens: 16000,
+    messages: toOpenAI(system, messages, gemini),
+    ...(gemini ? {} : { max_completion_tokens: 16000 }),
     reasoning_effort: "low",
     ...(tools.length
       ? {
@@ -79,15 +96,16 @@ async function askOpenAI(system: string | undefined, messages: Msg[], tools: Too
   const content: Block[] = [];
   const text = msg?.content || msg?.refusal || "";
   if (text) content.push({ type: "text", text });
-  for (const c of msg?.tool_calls ?? []) {
+  for (const [i, c] of (msg?.tool_calls ?? []).entries()) {
     if (c.type !== "function") continue;
+    const extra = (c as unknown as { extra_content?: unknown }).extra_content;
     let input: unknown = {};
     try {
       input = JSON.parse(c.function.arguments || "{}");
     } catch {
       input = { _invalidArguments: c.function.arguments };
     }
-    content.push({ type: "tool_use", id: c.id, name: c.function.name, input });
+    content.push({ type: "tool_use", id: c.id || `call_${Date.now()}_${i}`, name: c.function.name, input, ...(extra ? { extra } : {}) });
   }
   const usesTools = content.some((b) => b.type === "tool_use");
   const stop = usesTools ? "tool_use" : choice?.finish_reason === "length" ? "max_tokens" : "end_turn";
@@ -113,8 +131,8 @@ async function askClaude(system: string | undefined, messages: Msg[], tools: Too
 
 export async function POST(request: Request) {
   if (!(await signedIn())) return unauthorized();
-  const useOpenAI = !!openaiKey();
-  if (!useOpenAI && !process.env.ANTHROPIC_API_KEY) return fail(503, "매니저 열쇠(OPENAI_API_KEY)가 없어요");
+  const ai = compat();
+  if (!ai && !process.env.ANTHROPIC_API_KEY) return fail(503, "매니저 열쇠(GEMINI_API_KEY)가 없어요");
 
   let body: { system?: unknown; messages?: unknown; tools?: unknown };
   try {
@@ -128,18 +146,20 @@ export async function POST(request: Request) {
   const system = typeof body.system === "string" && body.system ? body.system : undefined;
 
   try {
-    return Response.json(useOpenAI ? await askOpenAI(system, messages, tools) : await askClaude(system, messages, tools));
+    return Response.json(ai ? await askCompat(ai, system, messages, tools) : await askClaude(system, messages, tools));
   } catch (error) {
     // OpenAI가 알려 준 이유(code/type)를 붙여서 무엇이 문제인지 보이게 한다(키 값은 들어 있지 않다)
     if (error instanceof OpenAI.APIError) {
       const why = [error.code, error.type].filter(Boolean).join(" / ");
       console.error("openai error", error.status, why, error.message);
+      const name = geminiKey() ? "Gemini" : "ChatGPT";
       if (error.code === "insufficient_quota" || error.type === "insufficient_quota") return fail(402, "OpenAI 크레딧이 없어요. platform.openai.com → Billing에서 충전해 주세요");
+      if (geminiKey() && error instanceof OpenAI.RateLimitError) return fail(429, `Gemini 무료 사용량을 다 썼어요. 잠시 뒤(하루 한도면 내일) 다시 말해 주세요 (${why || "429"})`);
       if (error instanceof OpenAI.RateLimitError) return fail(429, `잠시 후 다시 말해 주세요 (${why || "rate limit"})`);
-      if (error instanceof OpenAI.AuthenticationError) return fail(503, "ChatGPT 키가 맞지 않아요");
-      if (error instanceof OpenAI.NotFoundError || error instanceof OpenAI.PermissionDeniedError) return fail(502, `이 키로는 ${process.env.OPENAI_MODEL || "gpt-5.4-mini"} 모델을 쓸 수 없어요 (${why || error.status})`);
+      if (error instanceof OpenAI.AuthenticationError) return fail(503, `${name} 키가 맞지 않아요`);
+      if (error instanceof OpenAI.NotFoundError || error instanceof OpenAI.PermissionDeniedError) return fail(502, `이 키로는 ${compat()?.model} 모델을 쓸 수 없어요 (${why || error.status})`);
       if (error instanceof OpenAI.BadRequestError) return fail(400, error.message);
-      return fail(502, `ChatGPT 서버 오류 (${error.status ?? "연결"}${why ? `, ${why}` : ""})`);
+      return fail(502, `${name} 서버 오류 (${error.status ?? "연결"}${why ? `, ${why}` : ""})`);
     }
     if (error instanceof Anthropic.RateLimitError) return fail(429, "잠시 후 다시 말해 주세요");
     if (error instanceof Anthropic.AuthenticationError) return fail(503, "API 키가 맞지 않아요");
