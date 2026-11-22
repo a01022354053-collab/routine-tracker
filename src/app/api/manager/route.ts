@@ -25,16 +25,26 @@ const fail = (status: number, error: string) => Response.json({ error }, { statu
 const asText = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v ?? ""));
 
 /* ---------- ChatGPT · Gemini(OpenAI 호환) ---------- */
-type Compat = { client: OpenAI; model: string; gemini: boolean };
+type Compat = { client: OpenAI; models: string[]; gemini: boolean };
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/";
+// Gemini 무료 구간은 모델이 바쁘다(503)며 거절할 때가 잦아서, 앞 모델이 안 되면 다음 모델로 넘어간다
+const GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"];
 
 function compat(): Compat | null {
   const g = geminiKey();
-  if (g) return { client: new OpenAI({ apiKey: g, baseURL: process.env.GEMINI_BASE_URL || GEMINI_BASE }), model: process.env.GEMINI_MODEL || "gemini-3.8-flash", gemini: true };
+  if (g) {
+    const models = [...new Set([process.env.GEMINI_MODEL, ...GEMINI_MODELS].filter((m): m is string => !!m))];
+    return { client: new OpenAI({ apiKey: g, baseURL: process.env.GEMINI_BASE_URL || GEMINI_BASE }), models, gemini: true };
+  }
   const o = openaiKey();
-  if (o) return { client: new OpenAI({ apiKey: o }), model: process.env.OPENAI_MODEL || "gpt-5.4-mini", gemini: false };
+  if (o) return { client: new OpenAI({ apiKey: o }), models: [process.env.OPENAI_MODEL || "gpt-5.4-mini"], gemini: false };
   return null;
 }
+
+// 다른 모델로 넘어가 볼 만한 실패: 바쁨·서버 오류·시간 초과·그 모델만의 한도·없는 모델
+const tryNext = (e: unknown) =>
+  e instanceof OpenAI.APIConnectionError ||
+  (e instanceof OpenAI.APIError && (e.status === 404 || e.status === 429 || (e.status ?? 0) >= 500) && e.code !== "insufficient_quota");
 
 function toOpenAI(system: string | undefined, messages: Msg[], gemini: boolean) {
   const out: OpenAI.Chat.ChatCompletionMessageParam[] = [];
@@ -76,7 +86,23 @@ function toOpenAI(system: string | undefined, messages: Msg[], gemini: boolean) 
   return out;
 }
 
-async function askCompat({ client, model, gemini }: Compat, system: string | undefined, messages: Msg[], tools: Tool[]): Promise<Reply> {
+async function askCompat(ai: Compat, system: string | undefined, messages: Msg[], tools: Tool[]): Promise<Reply> {
+  let last: unknown;
+  for (const [i, model] of ai.models.entries()) {
+    try {
+      return await askOnce(ai, model, system, messages, tools);
+    } catch (e) {
+      last = e;
+      console.error("manager model failed", model, e instanceof OpenAI.APIError ? e.status : e);
+      if (i === ai.models.length - 1 || !tryNext(e)) throw e;
+    }
+  }
+  throw last;
+}
+
+async function askOnce({ client, gemini, models }: Compat, model: string, system: string | undefined, messages: Msg[], tools: Tool[]): Promise<Reply> {
+  // 모델이 여럿이면 하나당 25초까지만 기다린다(전체 120초 안에 끝나게)
+  const wait = models.length > 1 ? { timeout: 25000, maxRetries: 0 } : { timeout: 60000, maxRetries: 1 };
   const res = await client.chat.completions.create({
     model,
     messages: toOpenAI(system, messages, gemini),
@@ -90,7 +116,7 @@ async function askCompat({ client, model, gemini }: Compat, system: string | und
           })),
         }
       : {}),
-  });
+  }, wait);
   const choice = res.choices[0];
   const msg = choice?.message;
   const content: Block[] = [];
@@ -157,7 +183,8 @@ export async function POST(request: Request) {
       if (geminiKey() && error instanceof OpenAI.RateLimitError) return fail(429, `Gemini 무료 사용량을 다 썼어요. 잠시 뒤(하루 한도면 내일) 다시 말해 주세요 (${why || "429"})`);
       if (error instanceof OpenAI.RateLimitError) return fail(429, `잠시 후 다시 말해 주세요 (${why || "rate limit"})`);
       if (error instanceof OpenAI.AuthenticationError) return fail(503, `${name} 키가 맞지 않아요`);
-      if (error instanceof OpenAI.NotFoundError || error instanceof OpenAI.PermissionDeniedError) return fail(502, `이 키로는 ${compat()?.model} 모델을 쓸 수 없어요 (${why || error.status})`);
+      if (error instanceof OpenAI.NotFoundError || error instanceof OpenAI.PermissionDeniedError) return fail(502, `이 키로는 ${compat()?.models.join(", ")} 모델을 쓸 수 없어요 (${why || error.status})`);
+      if (geminiKey() && (error.status ?? 0) >= 500) return fail(503, "Gemini가 지금 바빠요. 조금 뒤에 다시 말해 주세요");
       if (error instanceof OpenAI.BadRequestError) return fail(400, error.message);
       return fail(502, `${name} 서버 오류 (${error.status ?? "연결"}${why ? `, ${why}` : ""})`);
     }
