@@ -14,7 +14,7 @@ export const maxDuration = 120;
 type Block =
   | { type: "text"; text: string }
   | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
-  | { type: "tool_use"; id: string; name: string; input: unknown; extra?: unknown }
+  | { type: "tool_use"; id: string; name: string; input: unknown; extra?: unknown; via?: string }
   | { type: "tool_result"; tool_use_id: string; content: unknown; is_error?: boolean }
   | { type: string; [k: string]: unknown };
 type Msg = { role: "user" | "assistant"; content: string | Block[] };
@@ -28,7 +28,8 @@ const asText = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v ?? 
 type Compat = { client: OpenAI; models: string[]; gemini: boolean };
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/";
 // Gemini 무료 구간은 모델이 바쁘다(503)며 거절할 때가 잦아서, 앞 모델이 안 되면 다음 모델로 넘어간다
-const GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-2.5-flash"];
+// (2026-11 확인: 3.8-flash는 자주 붐비고, 2.5-flash는 새 사용자에게 막혔고, 3.5-flash는 잘 답한다)
+const GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.1-flash-lite"];
 
 function compat(): Compat | null {
   const g = geminiKey();
@@ -87,14 +88,17 @@ function toOpenAI(system: string | undefined, messages: Msg[], gemini: boolean) 
 }
 
 async function askCompat(ai: Compat, system: string | undefined, messages: Msg[], tools: Tool[]): Promise<Reply> {
+  // 도구를 주고받는 중이면 앞 차례에 답한 모델을 먼저 쓴다(thought signature는 그 모델 것이라서)
+  const prev = [...messages].reverse().flatMap((m) => (Array.isArray(m.content) ? m.content : [])).find((b) => b.type === "tool_use" && typeof b.via === "string")?.via as string | undefined;
+  const models = prev && ai.models.includes(prev) ? [prev, ...ai.models.filter((m) => m !== prev)] : ai.models;
   let last: unknown;
-  for (const [i, model] of ai.models.entries()) {
+  for (const [i, model] of models.entries()) {
     try {
       return await askOnce(ai, model, system, messages, tools);
     } catch (e) {
       last = e;
       console.error("manager model failed", model, e instanceof OpenAI.APIError ? e.status : e);
-      if (i === ai.models.length - 1 || !tryNext(e)) throw e;
+      if (i === models.length - 1 || !tryNext(e)) throw e;
     }
   }
   throw last;
@@ -131,7 +135,7 @@ async function askOnce({ client, gemini, models }: Compat, model: string, system
     } catch {
       input = { _invalidArguments: c.function.arguments };
     }
-    content.push({ type: "tool_use", id: c.id || `call_${Date.now()}_${i}`, name: c.function.name, input, ...(extra ? { extra } : {}) });
+    content.push({ type: "tool_use", id: c.id || `call_${Date.now()}_${i}`, name: c.function.name, input, via: model, ...(extra ? { extra } : {}) });
   }
   const usesTools = content.some((b) => b.type === "tool_use");
   const stop = usesTools ? "tool_use" : choice?.finish_reason === "length" ? "max_tokens" : "end_turn";
