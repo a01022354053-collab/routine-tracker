@@ -11,7 +11,27 @@ async function geminiModels() {
     const client = new OpenAI({ apiKey: key, baseURL: process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai/" });
     const ids: string[] = [];
     for await (const m of client.models.list({ timeout: 15000, maxRetries: 0 })) ids.push(m.id);
-    return { models: ids.map((id) => id.replace(/^models\//, "")).filter((id) => /gemini/i.test(id)).slice(0, 60) };
+    const models = ids.map((id) => id.replace(/^models\//, "")).filter((id) => /gemini/i.test(id));
+    // 몇 모델에 "hi" 한 마디씩 보내서 실제로 답하는지(그리고 reasoning_effort가 문제인지) 본다
+    const tries: Record<string, string> = {};
+    const one = async (model: string, effort: boolean) => {
+      try {
+        const r = await client.chat.completions.create(
+          { model, messages: [{ role: "user", content: "hi" }], ...(effort ? { reasoning_effort: "low" as const } : {}) },
+          { timeout: 20000, maxRetries: 0 },
+        );
+        return `ok: ${(r.choices[0]?.message?.content ?? "").slice(0, 30)}`;
+      } catch (e) {
+        return e instanceof OpenAI.APIError ? `${e.status ?? "연결"} ${e.message}`.slice(0, 220) : String(e).slice(0, 220);
+      }
+    };
+    await Promise.all(
+      ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"].flatMap((m) => [
+        one(m, false).then((r) => (tries[m] = r)),
+        one(m, true).then((r) => (tries[`${m} +effort`] = r)),
+      ]),
+    );
+    return { tries, models: models.slice(0, 60) };
   } catch (e) {
     return e instanceof OpenAI.APIError ? { error: `${e.status ?? "연결"} ${e.code ?? ""} ${e.message}`.slice(0, 300) } : { error: String(e).slice(0, 300) };
   }
