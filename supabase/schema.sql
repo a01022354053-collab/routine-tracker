@@ -11,3 +11,8 @@ create index if not exists daily_docs_col on public.daily_docs (col);
 
 -- RLS를 켜고 정책은 만들지 않는다: 공개 키(anon)로는 아무것도 읽거나 쓸 수 없고, 서버의 비밀 키만 통한다
 alter table public.daily_docs enable row level security;
+
+-- 새 표를 Data API에 저절로 열지 않는 프로젝트도 있으니, 서버(비밀 키 = service_role)에만 권한을 준다
+grant usage on schema public to service_role;
+grant select, insert, update on table public.daily_docs to service_role;
+notify pgrst, 'reload schema';
