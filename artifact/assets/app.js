@@ -39,6 +39,7 @@ const MENU = [
   { id: 'fixed', emoji: '🧾', name: '고정 지출' },
   { id: 'items', emoji: '🎒', name: '내 물건' },
   { id: 'shopping', emoji: '🛒', name: '사고 싶은 것' },
+  { id: 'anime', emoji: '📺', name: '애니 저장소' },
 ];
 
 /* ---------- 작은 도구 ---------- */
@@ -79,6 +80,7 @@ const S = {
   shopping: { list: [] },  // 사고 싶은 것
   fixed: { list: [] },     // 고정 지출(군적금은 savings에서 저절로, 나머지는 여기)
   budget: { from: null, base: 0, items: [] },  // 관리 목록: 쓸 수 있는 돈을 나눈 칸(from 달부터)
+  anime: { list: [] },     // 애니 저장소: 본 애니(마이애니리스트 썸네일)
   stocks: clone(DEFAULT_STOCKS),     // 주식
 };
 const UI = {
@@ -250,6 +252,18 @@ async function putFixed(v) {
   if (!DB) throw new Error('저장소에 연결되지 않았어요');
   S.fixed = clone(v); refresh();
   return queue('fixed/main', () => DB.doc('fixed/main').set(v));
+}
+async function putAnime(v) {
+  if (!DB) throw new Error('저장소에 연결되지 않았어요');
+  S.anime = clone(v); refresh();
+  return queue('anime/main', () => DB.doc('anime/main').set(v));
+}
+const animeOf = () => (S.anime.list || []).filter(x => !x.removed);
+// 마이애니리스트에서 찾기: 웹에서는 서버(/api/anime)가 MAL 검색을 대신 불러 준다. 아티팩트에서는 바깥에 못 나가서 안 된다
+async function searchAnime(q) {
+  const r = await fetch(`/api/anime?q=${encodeURIComponent(q)}`, { cache: 'no-store' }).catch(() => null);
+  if (!r || !r.ok) throw new Error('마이애니리스트 검색은 웹(leeseung06.kro.kr)에서만 돼요');
+  return (await r.json()).results || [];
 }
 async function putBudget(v) {
   if (!DB) throw new Error('저장소에 연결되지 않았어요');
@@ -555,6 +569,12 @@ async function connect() {
     const v = { list: [], ...(d.data() || {}) };
     if (same(v, S.shopping)) return;
     S.shopping = v;
+    refresh();
+  }, () => {});
+  DB.doc('anime/main').onSnapshot(d => {
+    const v = { list: [], ...(d.data() || {}) };
+    if (same(v, S.anime)) return;
+    S.anime = v;
     refresh();
   }, () => {});
   DB.doc('budget/main').onSnapshot(d => {
@@ -1550,7 +1570,7 @@ async function backup(btn) {
   btn.textContent = '모으는 중…';
   try {
     const out = { app: '일상 매니저', exportedAt: new Date().toISOString() };
-    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'fixed', 'budget', 'chatlog', 'log', 'chat', 'restored']) {
+    for (const col of ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'fixed', 'budget', 'anime', 'chatlog', 'log', 'chat', 'restored']) {
       const snap = await DB.collection(col).get();
       out[col] = Object.fromEntries(snap.docs.map(d => [d.id, d.data()]));
     }
@@ -1896,6 +1916,94 @@ async function toggleShop(id, btn) {
   try { await putShopping(sh); logAct(`${t.done ? '샀어요' : '산 것 취소'} · ${t.name} ${won((t.price || 0) * (t.qty || 1))}`); } catch (e) { saveFail(); }
 }
 
+/* ---------- 애니 저장소 ---------- */
+// 본 애니를 마이애니리스트 썸네일로 한 줄에 다섯 개씩
+function viewAnime() {
+  const list = animeOf();
+  return `
+    <div class="view-title anim" style="--i:0">${ICON.star}<h1>애니 저장소</h1></div>
+    ${ready() ? '' : statusPanel(1)}
+    <section class="panel anim ani-head" style="--i:1">
+      <div><span class="eyebrow">본 애니</span><b class="disp num">${list.length}<small>편</small></b></div>
+      <button class="btn ghost" data-anime-add>추가</button>
+    </section>
+    <div class="ani-grid">
+      ${list.map((x, i) => `<button class="ani-box anim" style="--i:${Math.min(2 + i, 14)}" data-anime="${esc(x.id)}">
+        <span class="ani-poster">${x.image ? `<img src="${esc(x.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<span class="emoji" aria-hidden="true">📺</span>'}</span>
+        <span class="ani-title">${esc(x.title)}</span>
+      </button>`).join('')}
+    </div>
+    ${list.length ? '' : '<p class="empty">아직 넣은 애니가 없어요</p>'}`;
+}
+
+// 애니 하나: 크게 보기, 제목 고치기, 다른 작품으로 바꾸기, 빼기
+function animeSheet(id) {
+  const x = (S.anime.list || []).find(a => a.id === id);
+  if (!x) return;
+  openSheet(`<div class="ani-hero">${x.image ? `<img src="${esc(x.image)}" alt="" referrerpolicy="no-referrer">` : ''}</div>
+    <div class="tr-head"><h3>${esc(x.title)}</h3><p>${esc(x.malTitle || '')}${x.year ? ` · ${x.year}` : ''}${x.type ? ` · ${esc(x.type)}` : ''}</p></div>
+    ${x.url ? `<a class="btn ghost ani-link" href="${esc(x.url)}" target="_blank" rel="noopener">마이애니리스트에서 보기</a>` : ''}
+    <div class="sh-sec"><span class="label">제목</span><input class="field" id="anTitle" maxlength="60" value="${esc(x.title)}"></div>
+    <div class="btn-row"><button class="btn ghost" id="anDel">목록에서 빼기</button><button class="btn" id="anSave">저장</button></div>
+    <button class="t-btn ani-repick" id="anRepick">다른 작품으로 바꾸기</button>`, body => {
+    const $ = q => body.querySelector(q);
+    $('#anSave').addEventListener('click', async () => {
+      const title = $('#anTitle').value.trim();
+      if (!title) { toast('제목을 넣어 주세요'); return; }
+      const an = clone(S.anime), t = an.list.find(a => a.id === id);
+      if (t.title !== title) { t.history = [...(t.history || []), { title: t.title, at: new Date().toISOString() }]; t.title = title; }
+      try { await putAnime(an); logAct(`애니 고침 · ${title}`); toast('저장했어요'); closeSheet(); } catch (e) { saveFail(); }
+    });
+    $('#anDel').addEventListener('click', async () => {
+      const an = clone(S.anime);
+      Object.assign(an.list.find(a => a.id === id), { removed: true, removedAt: new Date().toISOString() });
+      try { await putAnime(an); logAct(`애니 뺌 · ${x.title}`); toast('목록에서 뺐어요 (기록은 남아요)'); closeSheet(); } catch (e) { saveFail(); }
+    });
+    $('#anRepick').addEventListener('click', () => animeAddSheet(id));
+  }, 'toss');
+}
+
+// 애니 넣기(또는 replaceId면 그 애니의 작품 바꾸기): 마이애니리스트에서 찾아서 고른다
+function animeAddSheet(replaceId) {
+  const cur = replaceId ? (S.anime.list || []).find(a => a.id === replaceId) : null;
+  openSheet(`<div class="tr-head"><h3>${cur ? '다른 작품으로 바꾸기' : '애니 추가'}</h3><p>마이애니리스트는 영어·일본어 제목으로 찾아져요</p></div>
+    ${cur ? '' : '<div class="sh-sec"><span class="label">제목</span><input class="field" id="aaTitle" maxlength="60" placeholder="예: 장송의 프리렌"></div>'}
+    <div class="sh-sec"><span class="label">찾을 이름</span><div class="ani-search"><input class="field" id="aaQ" maxlength="80" placeholder="예: Sousou no Frieren" value="${esc(cur?.malTitle || '')}"><button class="t-btn primary" id="aaGo">찾기</button></div></div>
+    <div id="aaList" class="ani-results"></div>`, body => {
+    const $ = q => body.querySelector(q);
+    const go = async () => {
+      const q = $('#aaQ').value.trim() || $('#aaTitle')?.value.trim();
+      if (!q || q.length < 2) { toast('찾을 이름을 넣어 주세요'); return; }
+      $('#aaList').innerHTML = '<p class="t-sub">찾는 중…</p>';
+      try {
+        const rs = await searchAnime(q);
+        $('#aaList').innerHTML = rs.length ? rs.map((r, i) => `<button class="t-row ani-pick" data-i="${i}">
+            <span class="ani-thumb">${r.image ? `<img src="${esc(r.image)}" alt="" referrerpolicy="no-referrer">` : ''}</span>
+            <span class="txt"><b>${esc(r.name)}</b><small>${esc(r.type || '')}${r.year ? ` · ${r.year}` : ''}</small></span></button>`).join('')
+          : '<p class="t-sub">찾지 못했어요. 영어나 일본어 제목으로 찾아 보세요</p>';
+        $('#aaList').onclick = async e => {
+          const b = e.target.closest('[data-i]'); if (!b) return;
+          const r = rs[b.dataset.i], now = new Date().toISOString(), an = clone(S.anime);
+          an.list = an.list || [];
+          const pick = { malId: r.malId, malTitle: r.name, year: r.year, type: r.type, image: r.image, url: r.url };
+          if (cur) {
+            const t = an.list.find(a => a.id === replaceId);
+            t.history = [...(t.history || []), { malId: t.malId, malTitle: t.malTitle, image: t.image, at: now }];
+            Object.assign(t, pick);
+          } else {
+            const title = $('#aaTitle').value.trim() || r.name;
+            an.list.push({ id: newId(), title, ...pick, at: now });
+          }
+          try { await putAnime(an); logAct(`애니 ${cur ? '바꿈' : '추가'} · ${cur ? cur.title : $('#aaTitle').value.trim() || r.name} (${r.name})`); toast(cur ? '바꿨어요' : '넣었어요'); closeSheet(); } catch (err) { saveFail(); }
+        };
+      } catch (e) { $('#aaList').innerHTML = `<p class="t-sub">${esc(e.message)}</p>`; }
+    };
+    $('#aaGo').addEventListener('click', go);
+    $('#aaQ').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+    setTimeout(() => ($('#aaTitle') || $('#aaQ')).focus(), 320);
+  }, 'toss');
+}
+
 function viewSoon(item) {
   return `
     <div class="view-title anim" style="--i:0">${ICON.star}<h1>${item.name}</h1></div>
@@ -2001,7 +2109,7 @@ const routeId = () => (MENU.some(x => x.id !== 'chat' && x.id === location.hash.
 function renderView(id) {
   const item = MENU.find(x => x.id === id);
   return id === 'today' ? viewToday() : id === 'archive' ? viewArchive() : id === 'money' ? viewMoney()
-    : id === 'fixed' ? viewFixed() : id === 'items' ? viewItems() : id === 'shopping' ? viewShopping() : viewSoon(item);
+    : id === 'fixed' ? viewFixed() : id === 'items' ? viewItems() : id === 'shopping' ? viewShopping() : id === 'anime' ? viewAnime() : viewSoon(item);
 }
 
 // mode: enter(등장 애니메이션) | update(제자리 갱신) | route(화면 전환)
@@ -2483,6 +2591,9 @@ $view.addEventListener('click', e => {
   const sp = e.target.closest('[data-shop]');
   if (sp) { if (suppressClick) { suppressClick = false; return; } shopSheet(sp.dataset.shop); return; }
   if (e.target.closest('[data-plan]')) { planSheet(); return; }
+  if (e.target.closest('[data-anime-add]')) { animeAddSheet(null); return; }
+  const ani = e.target.closest('[data-anime]');
+  if (ani) { animeSheet(ani.dataset.anime); return; }
   if (e.target.closest('[data-budget]')) { budgetSheet(); return; }
   if (e.target.closest('[data-fixed-add]')) { fixedSheet(null); return; }
   if (e.target.closest('[data-go-fixed]')) { location.hash = '#fixed'; return; }
@@ -2581,7 +2692,7 @@ function instructions() {
 - '남은 돈이 X원이야', '○○에 X원 있어'처럼 잔액을 말하면 그 통장에 set_balance로 맞춰. 이번 달 남은 돈 = 쓸 수 있는 돈 통장 잔액 합계라서 통장이 애매하면 물어봐. 잔액을 맞추면 돈 관리 화면 숫자가 모두 그에 맞게 바뀌어.
 - 시간이 걸리는 할 일은 minutes(분)에, 개수 같은 양은 amount에 넣어. 사이트 개발은 kind "dev", 운동은 kind "workout", 감사한 점 3개는 kind "thanks".
 - 감사한 점은 그날 자정 전까지만 적을 수 있고, 지나면 탈락이야.
-- 앱에 보이는 기록은 전부 도구로 바꿀 수 있어: 할 일·감사한 점·운동, 잔액·지출·입금·이체(취소 포함), 통장 묶음, 군적금, 주식, 관리 목록, 고정 지출, 예상 월급, 내 물건(개수·가격·다 떨어짐), 사고 싶은 것(샀어요 포함). 무엇을 고칠지 모르면 get_data로 먼저 찾아봐. '못 한다'고 하기 전에 맞는 도구가 있는지 꼭 확인해.
+- 앱에 보이는 기록은 전부 도구로 바꿀 수 있어: 할 일·감사한 점·운동, 잔액·지출·입금·이체(취소 포함), 통장 묶음, 군적금, 주식, 관리 목록, 고정 지출, 예상 월급, 내 물건(개수·가격·다 떨어짐), 사고 싶은 것(샀어요 포함), 애니 저장소. 무엇을 고칠지 모르면 get_data로 먼저 찾아봐. '못 한다'고 하기 전에 맞는 도구가 있는지 꼭 확인해.
 - 할 수 없는 건 앱 화면이나 기능을 새로 만들거나 바꾸는 일(코딩)뿐이야. 그런 요청이면 대화 밖 개발 세션에서 한다고 알려줘.
 
 지금: ${TODAY} ${DAY[NOW.getDay()]}요일 ${hm}
@@ -2602,6 +2713,7 @@ ${(() => {
 이번 달(${mk}) 쓴 돈 합계 ${won(spentIn(mk))}, 최근 내역: ${JSON.stringify(recentSpend)}
 내 물건: ${JSON.stringify(itemsOf().map(x => [x.name, x.qty != null ? `${x.qty}${x.unit || '개'}` : '', x.price]))}
 사고 싶은 것: ${JSON.stringify(shopOf().filter(x => !x.done).map(x => [x.name, x.price ?? '미정']))}
+애니 저장소: 본 애니 ${animeOf().length}편 (목록은 get_data 애니). 새로 봤다고 하면 add_anime(search에는 마이애니리스트에서 찾을 영어·일본어 로마자 제목, 시리즈는 보통 1기).
 지출은 add_expense(분류: ${CATS.map(c => c.name).join(', ')}), 들어온 돈은 add_income으로 기록해. 기록은 지우지 않고 숨기기만 해.
 사진이 오면: 은행·카드 앱 화면이면 보이는 통장 잔액은 set_balance로, 거래는 add_expense/add_income으로 넣어. 최근 내역에 이미 있는 거래(같은 날짜·금액)는 다시 넣지 마. 화면이 흐리거나 확실하지 않은 숫자는 넣지 말고 물어봐. 넣은 것을 한 줄씩 알려줘.`;
 }
@@ -3000,7 +3112,7 @@ function makeTools(before, acts) {
       name: 'get_data',
       description: 'Reads records shown in the app so you can find what to change (ids, names, amounts): 내 물건, 사고 싶은 것, 지출 내역, 이체, 군적금, 주식, 관리 목록, 고정 지출, 잔액 기록, 돈 설정. month (YYYY-MM) for 지출 내역·이체·잔액 기록.',
       inputSchema: { type: 'object', properties: {
-        kind: { type: 'string', enum: ['내 물건', '사고 싶은 것', '지출 내역', '이체', '군적금', '주식', '관리 목록', '고정 지출', '잔액 기록', '돈 설정'] },
+        kind: { type: 'string', enum: ['내 물건', '사고 싶은 것', '지출 내역', '이체', '군적금', '주식', '관리 목록', '고정 지출', '잔액 기록', '돈 설정', '애니'] },
         month: { type: 'string', description: 'YYYY-MM' },
       }, required: ['kind'] },
       execute: async input => {
@@ -3015,9 +3127,51 @@ function makeTools(before, acts) {
           case '관리 목록': return { from: S.budget.from, items: budgetItems().map(b => ({ name: b.name, amount: b.amount, kind: BUDGET_KIND[b.kind] })), thisMonth: monthPlan(curCycle()).budget };
           case '고정 지출': return fixedRows().map(x => ({ id: x.id, name: x.name, amount: x.amount, day: x.day, bank: bankName(x.bank) || undefined, savings: x.savings || undefined }));
           case '잔액 기록': return (S.balhist[mk]?.items || []).map(x => ({ at: x.at, bank: bankName(x.bank), amount: x.amount }));
+          case '애니': return animeOf().map(x => ({ id: x.id, title: x.title, malTitle: x.malTitle, year: x.year }));
           case '돈 설정': return { payday: S.money.payday, expectedSalary: expectedSalary(), balances: Object.fromEntries(BANKS.map(b => [b.name, S.money.balances[b.id]])), groups: Object.fromEntries(BANKS.map(b => [b.name, GROUP_NAME[groupOf(b.id)]])) };
           default: throw new Error('kind를 다시 골라 주세요');
         }
+      },
+    },
+    {
+      name: 'add_anime',
+      description: 'Adds an anime the user watched to 애니 저장소 with its MyAnimeList thumbnail. title: how to show it (Korean, as the user says it). search: its English or Japanese romaji title for MyAnimeList search (e.g. "Sousou no Frieren"). pick: which search result to use (0 = first, default). Returns the result list so you can tell the user what was picked.',
+      inputSchema: { type: 'object', properties: { title: { type: 'string' }, search: { type: 'string' }, pick: { type: 'number' } }, required: ['title', 'search'] },
+      execute: async input => {
+        const rs = await searchAnime(String(input.search));
+        if (!rs.length) throw new Error(`마이애니리스트에서 '${input.search}'를 찾지 못했어요. 다른 영어·일본어 제목으로 찾아 봐`);
+        const r = rs[Math.min(rs.length - 1, Math.max(0, Math.round(Number(input.pick) || 0)))];
+        keep('anime/main', S.anime);
+        const an = clone(S.anime);
+        an.list = [...(an.list || []), { id: newId(), title: String(input.title).trim().slice(0, 60), malId: r.malId, malTitle: r.name, year: r.year, type: r.type, image: r.image, url: r.url, at: new Date().toISOString() }];
+        await putAnime(an);
+        acts.push(`애니 추가: ${input.title} (${r.name})`);
+        return { ok: true, picked: `${r.name} (${r.type} ${r.year || ''})`, results: rs.slice(0, 5).map((x, i) => `${i}: ${x.name} (${x.type} ${x.year || ''})`) };
+      },
+    },
+    {
+      name: 'update_anime',
+      description: 'Changes an anime in 애니 저장소 found by its shown title: new_title, or search (+ pick) to switch it to another MyAnimeList entry (e.g. season 1 instead of season 2), or remove: true to hide it.',
+      inputSchema: { type: 'object', properties: { title: { type: 'string' }, new_title: { type: 'string' }, search: { type: 'string' }, pick: { type: 'number' }, remove: { type: 'boolean' } }, required: ['title'] },
+      execute: async input => {
+        const hit = animeOf().filter(x => squash(x.title).includes(squash(input.title)) || squash(x.malTitle).includes(squash(input.title)));
+        if (hit.length !== 1) throw new Error(hit.length ? `여러 개가 맞아요: ${hit.map(x => x.title).join(', ')}` : `${input.title}이(가) 애니 저장소에 없어요`);
+        keep('anime/main', S.anime);
+        const an = clone(S.anime), t = an.list.find(x => x.id === hit[0].id), now = new Date().toISOString();
+        t.history = [...(t.history || []), { title: t.title, malId: t.malId, malTitle: t.malTitle, image: t.image, at: now }];
+        if (input.remove) Object.assign(t, { removed: true, removedAt: now });
+        else {
+          if (input.new_title) t.title = String(input.new_title).trim().slice(0, 60);
+          if (input.search) {
+            const rs = await searchAnime(String(input.search));
+            if (!rs.length) throw new Error(`'${input.search}'를 찾지 못했어요`);
+            const r = rs[Math.min(rs.length - 1, Math.max(0, Math.round(Number(input.pick) || 0)))];
+            Object.assign(t, { malId: r.malId, malTitle: r.name, year: r.year, type: r.type, image: r.image, url: r.url });
+          }
+        }
+        await putAnime(an);
+        acts.push(input.remove ? `애니 뺌: ${t.title}` : `애니 고침: ${t.title}${input.search ? ` (${t.malTitle})` : ''}`);
+        return { ok: true, malTitle: t.malTitle };
       },
     },
     {
@@ -3207,6 +3361,7 @@ async function undoTurn(at) {
       else if (col === 'fixed') await putFixed(val || { list: [] });
       else if (col === 'budget') await putBudget(val || { from: null, base: 0, items: [] });
       else if (col === 'savings') await putSavings(val || clone(DEFAULT_SAVINGS));
+      else if (col === 'anime') await putAnime(val || { list: [] });
       else if (col === 'stocks') await putStocks(val || clone(DEFAULT_STOCKS));
     }
     delete UI.undo[at];

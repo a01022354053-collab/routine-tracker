@@ -268,7 +268,7 @@
 
   /* ---------- 백업 불러오기: 아티팩트에서 내려받은 JSON을 넣는다 ---------- */
   // 같은 경로에 이미 다른 기록이 있으면 덮어쓰기 전에 restored/<시각> 문서에 남겨 둔다(지우지 않는다)
-  const COLS = ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'fixed', 'budget', 'chatlog', 'log', 'chat'];
+  const COLS = ['days', 'workout', 'settings', 'money', 'spend', 'transfers', 'balhist', 'savings', 'stocks', 'items', 'shopping', 'fixed', 'budget', 'anime', 'chatlog', 'log', 'chat'];
   window.__webRestore = btn => {
     const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'application/json,.json' });
     input.addEventListener('change', async () => {
