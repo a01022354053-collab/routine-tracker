@@ -46,11 +46,21 @@ export function openaiKey() {
  */
 export function geminiKey() {
   const isKey = (v: string | undefined) => !!v && v.trim().startsWith("AIza");
-  if (isKey(process.env.GEMINI_API_KEY)) return process.env.GEMINI_API_KEY!.trim();
   const all = Object.entries(process.env);
-  const named = all.find(([name, v]) => /gemini|google/i.test(name) && isKey(v));
+  // 이름에 GEMINI가 들어간 값은 모양과 상관없이 쓴다(키 모양이 바뀌어도 되게)
+  const byName = all.find(([name, v]) => /gemini/i.test(name) && !!v?.trim());
+  const named = byName ?? all.find(([name, v]) => /google/i.test(name) && isKey(v));
   const any = named ?? all.find(([, v]) => isKey(v));
   return any ? any[1]!.trim() : "";
+}
+
+/** 들어온 사람에게만: AI 키로 보이는 환경 변수의 이름과 종류(값은 절대 내보내지 않는다) */
+export function aiEnvSummary() {
+  const kind = (v: string) => (v.startsWith("AIza") ? "gemini" : v.startsWith("sk-ant-") ? "claude" : v.startsWith("sk-") ? "openai" : "모양 모름");
+  return Object.entries(process.env)
+    .filter(([name, v]) => !!v && (/gemini|google|openai|gpt|anthropic|claude|api_?key|키/i.test(name) || /^(AIza|sk-)/.test(v.trim())))
+    .filter(([name]) => !/^(VERCEL|NEXT_|NODE_|npm_|SUPABASE|APP_PASSWORD)/i.test(name))
+    .map(([name, v]) => ({ name, kind: kind(v!.trim()) }));
 }
 
 /** 매니저가 어느 AI를 쓰는지(키 값은 내보내지 않는다). Gemini → ChatGPT → Claude 순서로 있는 것 */
