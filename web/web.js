@@ -11,6 +11,66 @@
   // 홈 화면 앱: 서비스 워커(public/sw.js) — 늘 새로 받고, 연결이 끊겼을 때만 마지막 화면
   if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 
+  /* ---------- 홈 화면에 앱으로 두기 ----------
+     안드로이드 크롬·삼성 인터넷: 설치 창(beforeinstallprompt)을 버튼 하나로 띄운다.
+     아이폰: 사이트가 설치 창을 못 띄워서 공유 → 홈 화면에 추가를 그림으로 알려 준다.
+     카카오톡·네이버 같은 앱 안 브라우저: 거기서는 안 되니 크롬/Safari로 열어 준다. */
+  const UA = navigator.userAgent;
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isIOS = /iPhone|iPad|iPod/.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/.test(UA);
+  const inApp = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|\bLine\/|DaumApps|everytimeApp/i.test(UA);
+  const mobile = isIOS || isAndroid;
+  let deferred = null, pill = null;
+  const later = () => { try { return Date.now() - Number(localStorage.getItem('dm-install-later') || 0) < 3 * 86400000; } catch (e) { return false; } };
+  window.__webInstallable = !standalone;
+  const SHARE = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15V3m0 0L8 7m4-4l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 10H6a2 2 0 00-2 2v7a2 2 0 002 2h12a2 2 0 002-2v-7a2 2 0 00-2-2h-1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  const DOTS = '<b class="ig-key">⋮</b>';
+  function guide() {
+    const steps = inApp
+      ? [`오른쪽 위 ${isIOS ? '<b class="ig-key">⋯</b>' : DOTS} 누르기`, `'${isIOS ? 'Safari로 열기' : '다른 브라우저로 열기'}' 누르기`, '열린 곳에서 다시 \'설치\' 누르기']
+      : isIOS
+        ? [`아래쪽 공유 버튼 <span class="ig-key">${SHARE}</span> 누르기`, '\'홈 화면에 추가\' 누르기 <small>(안 보이면 목록을 아래로)</small>', '오른쪽 위 \'추가\' 누르기']
+        : [`오른쪽 위 ${DOTS} 메뉴 누르기`, '\'앱 설치\' 또는 \'홈 화면에 추가\' 누르기', '\'설치\' 누르기'];
+    const box = document.createElement('div');
+    box.className = `install-guide${isIOS && !inApp ? ' ios' : ''}`;
+    box.innerHTML = `<div class="ig-card panel" role="dialog" aria-label="홈 화면에 앱으로 두기">
+        <img class="ig-icon" src="/icon-192.png" alt="">
+        <h2>홈 화면에 앱으로 두기</h2>
+        <ol>${steps.map(s => `<li>${s}</li>`).join('')}</ol>
+        <button class="btn" type="button">알겠어요</button>
+      </div>${isIOS && !inApp ? '<div class="ig-arrow" aria-hidden="true">↓</div>' : ''}`;
+    box.addEventListener('click', e => { if (e.target === box || e.target.closest('.btn')) box.remove(); });
+    document.body.append(box);
+  }
+  async function install() {
+    if (deferred) {
+      deferred.prompt();
+      const { outcome } = await deferred.userChoice.catch(() => ({}));
+      deferred = null;
+      if (outcome === 'accepted') hidePill();
+      return;
+    }
+    // 앱 안 브라우저면 바로 바깥 브라우저로 열기를 먼저 해 본다
+    if (inApp && isAndroid) { location.href = `intent://${location.host}${location.pathname}#Intent;scheme=https;package=com.android.chrome;end`; return; }
+    if (inApp && /KAKAOTALK/i.test(UA)) { location.href = `kakaotalk://web/openExternal?url=${encodeURIComponent(location.href)}`; return; }
+    guide();
+  }
+  window.__webInstall = install;
+  function hidePill() { pill?.remove(); pill = null; }
+  function showPill() {
+    if (standalone || pill || later() || !(mobile || deferred)) return;
+    pill = document.createElement('div');
+    pill.className = 'install-pill';
+    pill.innerHTML = `<img src="/icon-192.png" alt=""><b>${inApp ? '크롬·Safari로 열어야 앱으로 둘 수 있어요' : '홈 화면에 앱으로 두기'}</b>
+      <button class="ip-go" type="button">${inApp ? '열기' : '설치'}</button><button class="ip-x" type="button" aria-label="닫기">✕</button>`;
+    pill.querySelector('.ip-go').addEventListener('click', install);
+    pill.querySelector('.ip-x').addEventListener('click', () => { try { localStorage.setItem('dm-install-later', String(Date.now())); } catch (e) { /* 저장 못 해도 이번엔 닫기 */ } hidePill(); });
+    document.body.append(pill);
+  }
+  addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferred = e; if (gate === null) setTimeout(showPill, 600); });
+  addEventListener('appinstalled', () => { deferred = null; hidePill(); window.toast?.('홈 화면에 앱으로 두었어요'); });
+
   const clone = v => (v == null ? v : JSON.parse(JSON.stringify(v)));
   const STAR = '<svg class="login-star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0Q13.9 10.1 24 12 13.9 13.9 12 24 10.1 13.9 0 12 10.1 10.1 12 0Z" fill="currentColor"/></svg>';
 
@@ -71,6 +131,8 @@
     const s = await fetch('/api/session', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ ok: false, missing: [] }));
     if (!s.ok) await askPassword(s.missing || []);
   })();
+  // 들어온 뒤 시작 화면이 끝나면 '앱으로 두기' 버튼을 띄운다
+  ready.then(() => setTimeout(showPill, 2200)).catch(() => {});
   window.__webSignOut = async () => {
     await fetch('/api/logout', { method: 'POST' }).catch(() => {});
     location.reload();

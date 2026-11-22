@@ -905,6 +905,7 @@ function viewArchive() {
           <div><b>백업 불러오기</b><small>내려받은 백업 파일의 기록을 이 계정에 넣어요</small></div>
           <button class="btn ghost" data-restore>불러오기</button>
         </section>
+        ${window.__webInstallable ? '<button class="signout anim" style="--i:10" data-install>📲 홈 화면에 앱으로 두기</button>' : ''}
         <button class="signout anim" style="--i:10" data-signout>로그아웃</button>` : ''}
       </div>
     </div>`;
@@ -2619,6 +2620,7 @@ $view.addEventListener('click', e => {
   const rs = e.target.closest('[data-restore]');
   if (rs) { window.__webRestore?.(rs); return; }
   if (e.target.closest('[data-signout]')) { window.__webSignOut?.(); return; }
+  if (e.target.closest('[data-install]')) { window.__webInstall?.(); return; }
 });
 let cardDrag = null, dragFrom = null, suppressClick = false;
 $view.addEventListener('pointerdown', e => {
