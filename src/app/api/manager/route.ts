@@ -130,11 +130,21 @@ export async function POST(request: Request) {
   try {
     return Response.json(useOpenAI ? await askOpenAI(system, messages, tools) : await askClaude(system, messages, tools));
   } catch (error) {
-    if (error instanceof OpenAI.APIError && error.code === "insufficient_quota") return fail(402, "OpenAI 크레딧이 없어요. platform.openai.com에서 충전해 주세요");
-    if (error instanceof OpenAI.RateLimitError || error instanceof Anthropic.RateLimitError) return fail(429, "잠시 후 다시 말해 주세요");
-    if (error instanceof OpenAI.AuthenticationError || error instanceof Anthropic.AuthenticationError) return fail(503, "API 키가 맞지 않아요");
-    if (error instanceof OpenAI.BadRequestError || error instanceof Anthropic.BadRequestError) return fail(400, error.message);
-    if (error instanceof OpenAI.APIError || error instanceof Anthropic.APIError) return fail(502, `매니저 서버 오류 (${error.status ?? "연결"})`);
+    // OpenAI가 알려 준 이유(code/type)를 붙여서 무엇이 문제인지 보이게 한다(키 값은 들어 있지 않다)
+    if (error instanceof OpenAI.APIError) {
+      const why = [error.code, error.type].filter(Boolean).join(" / ");
+      console.error("openai error", error.status, why, error.message);
+      if (error.code === "insufficient_quota" || error.type === "insufficient_quota") return fail(402, "OpenAI 크레딧이 없어요. platform.openai.com → Billing에서 충전해 주세요");
+      if (error instanceof OpenAI.RateLimitError) return fail(429, `잠시 후 다시 말해 주세요 (${why || "rate limit"})`);
+      if (error instanceof OpenAI.AuthenticationError) return fail(503, "ChatGPT 키가 맞지 않아요");
+      if (error instanceof OpenAI.NotFoundError || error instanceof OpenAI.PermissionDeniedError) return fail(502, `이 키로는 ${process.env.OPENAI_MODEL || "gpt-5.4-mini"} 모델을 쓸 수 없어요 (${why || error.status})`);
+      if (error instanceof OpenAI.BadRequestError) return fail(400, error.message);
+      return fail(502, `ChatGPT 서버 오류 (${error.status ?? "연결"}${why ? `, ${why}` : ""})`);
+    }
+    if (error instanceof Anthropic.RateLimitError) return fail(429, "잠시 후 다시 말해 주세요");
+    if (error instanceof Anthropic.AuthenticationError) return fail(503, "API 키가 맞지 않아요");
+    if (error instanceof Anthropic.BadRequestError) return fail(400, error.message);
+    if (error instanceof Anthropic.APIError) return fail(502, `매니저 서버 오류 (${error.status ?? "연결"})`);
     throw error;
   }
 }
